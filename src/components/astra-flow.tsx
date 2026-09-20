@@ -30,6 +30,17 @@ interface Props {
 type Job = { tourId: string; uploads: { imageId: string; pathname: string }[]; completed: Set<string> };
 type Busy = 'upload' | 'process' | 'checkout' | 'signin' | null;
 
+function reconstructionError(tour: TourView) {
+  const messages: Record<string, string> = {
+    CAPTURE_INVALID_IMAGES: 'La captura contiene imágenes no válidas o con resoluciones/orientaciones incompatibles. Usa los originales de la misma cámara, sin recortes, en una orientación constante.',
+    INSUFFICIENT_CAMERA_REGISTRATION: 'No se han podido conectar suficientes fotos de la escena. Repite la captura con más solapamiento y fotografías intermedias entre posiciones.',
+    PROCESS_TIMEOUT: 'La reconstrucción ha superado el tiempo de procesamiento permitido. Revisa la captura y contacta con soporte antes de repetirla.',
+    INSUFFICIENT_DISK: 'El servidor no dispone de espacio suficiente para procesar esta captura. No necesitas repetir la subida hasta que se revise el servicio.',
+    WORKER_LEASE_EXPIRED: 'Se perdió la conexión con el servidor de reconstrucción y se agotaron los intentos de recuperación.',
+  };
+  return messages[tour.reconstruction?.errorCode ?? ''] ?? 'No se pudo completar la reconstrucción. Revisa el solapamiento y la nitidez de las fotos antes de volver a intentarlo.';
+}
+
 function reconstructionLabel(tour: TourView | null) {
   const stage = tour?.reconstruction?.stage;
   const labels: Record<string, string> = {
@@ -251,7 +262,7 @@ export function AstraFlow({ user, initialTour, initialError, accessReady, paymen
         <section id="step-1" aria-label="Paso 1: Registro">
           <Step number={1} title="Conecta tu cuenta" description="Tu espacio empieza con un solo clic." completed={Boolean(user)} active={!user}
             right={user ? <Badge className="hidden border-success/20 text-success sm:flex">Conectado</Badge> : <Badge className="hidden sm:flex">Sin contraseña</Badge>}>
-            {user ? <div className="flex flex-wrap items-center justify-between gap-4 sm:pl-12"><div className="flex items-center gap-3"><Avatar><AvatarImage src={user.image ?? undefined} alt={user.name} /><AvatarFallback>{user.name.slice(0, 2).toUpperCase()}</AvatarFallback></Avatar><div><p className="text-sm font-medium">{user.name}</p><p className="mt-0.5 text-xs text-muted-foreground">Sesión guardada. Ya puedes subir tus fotos.</p></div></div>
+            {user ? <div className="flex flex-wrap items-center justify-between gap-4 sm:pl-12"><div className="flex items-center gap-3"><Avatar><AvatarImage src={user.image ?? undefined} alt={user.name} /><AvatarFallback>{user.name.slice(0, 2).toUpperCase()}</AvatarFallback></Avatar><div><p className="text-sm font-medium">{user.name}</p><p className="mt-0.5 text-xs text-muted-foreground">Sesión guardada. Tu cuenta está conectada.</p></div></div>
               {tour ? <Button variant="outline" size="sm" onClick={startNew} disabled={Boolean(busy)}><Plus />Nueva propiedad</Button> : null}</div>
               : <div className="flex flex-wrap items-center gap-4 sm:pl-12"><Button size="lg" variant="outline" className="bg-foreground text-background hover:bg-white/90" disabled={!accessReady || Boolean(busy)}
                 onClick={async () => { setBusy('signin'); try { await signIn('google', { redirectTo: '/#step-2' }); } catch { setError('No se pudo conectar con Google. Vuelve a intentarlo.'); setBusy(null); } }}>
@@ -264,7 +275,7 @@ export function AstraFlow({ user, initialTour, initialError, accessReady, paymen
           <Step number={2} title="Dale vida a tus imágenes" description="Captura una única propiedad desde distintas posiciones y con solapamiento." active={Boolean(user) && !previewReady} completed={Boolean(previewReady)}
             right={<Badge className="shrink-0">{files.length || tour?.images.length || 0} / {MAX_FILES} fotos</Badge>}>
             {!reconstructionReady ? <p role="status" className="mb-5 rounded-lg border border-primary/20 bg-primary/5 p-4 text-sm">El servidor de reconstrucción todavía no está activado. Puedes conectar tu cuenta; la generación permanecerá deshabilitada hasta que el motor esté operativo.</p> : null}
-            {tour?.status === 'error' ? <p role="alert" className="mb-5 rounded-lg border border-red-400/30 p-4 text-sm">No se pudo completar la reconstrucción. Revisa el solapamiento y la nitidez de las fotos antes de volver a intentarlo. No se ha realizado ningún cargo.</p> : null}
+            {tour?.status === 'error' ? <p role="alert" className="mb-5 rounded-lg border border-red-400/30 p-4 text-sm">{reconstructionError(tour)} No se ha realizado ningún cargo.</p> : null}
             {!previewReady ? <>
               <label htmlFor="property-title" className="mb-2 block text-sm text-muted-foreground">Nombre de la propiedad <span className="text-xs">(opcional)</span></label>
               <input id="property-title" value={title} onChange={e => setTitle(e.target.value)} disabled={!canSelect} maxLength={120}
@@ -287,7 +298,7 @@ export function AstraFlow({ user, initialTour, initialError, accessReady, paymen
                 <span className="absolute inset-x-0 bottom-0 truncate bg-black/70 px-2 py-1 text-xs">{file.name}</span>
               </div>)}</div> : null}
               {files.length > 60 ? <p className="mt-3 text-xs text-muted-foreground">Mostrando las primeras 60 miniaturas de {files.length} fotos seleccionadas.</p> : null}
-              <div className="mt-5 flex flex-wrap items-center justify-between gap-4"><p className="text-xs text-muted-foreground">Al menos {minimumImages} fotos. Solapamiento del 70–80 %, buena luz y sin objetos en movimiento.</p>
+              <div className="mt-5 flex flex-wrap items-center justify-between gap-4"><p className="text-xs text-muted-foreground">Al menos {minimumImages} fotos. Solapamiento del 70–80 %, buena luz y sin objetos en movimiento. Usa la misma cámara, resolución y orientación; no mezcles recortes ni versiones retocadas.</p>
                 <Button onClick={() => void generate()} disabled={!user || isWorking || Boolean(busy) || !reconstructionReady || (files.length ? files.length < minimumImages : !tour)}>
                   {isWorking ? <LoaderCircle className="animate-spin" /> : <Sparkles />}{isWorking ? 'Procesando…' : tour && !files.length ? 'Reintentar generación' : 'Generar previsualización'}{!isWorking ? <ArrowRight /> : null}
                 </Button></div>

@@ -144,7 +144,7 @@ class Lease:
         self.thread.join(timeout=35)
 
 
-def run_command(arguments, timeout, lease, work, deadline, max_disk):
+def run_command(arguments, timeout, lease, work, deadline, max_disk, failure_code='PROCESS_FAILED'):
     """Kill the entire subprocess group on a timeout, expired lease or disk bound."""
     # Child applications do not need the API or Blob credentials (only bridge does).
     environment = dict(os.environ)
@@ -170,7 +170,7 @@ def run_command(arguments, timeout, lease, work, deadline, max_disk):
                     next_disk_check = now + 15
                 time.sleep(1)
             if process.returncode:
-                raise JobError('PROCESS_FAILED')
+                raise JobError(failure_code)
         finally:
             if process.poll() is None:
                 os.killpg(process.pid, signal.SIGTERM)
@@ -211,8 +211,8 @@ def execute_job(api, job):
         with tempfile.TemporaryDirectory(prefix=f"job-{job['id']}-", dir=workspace) as temp:
             work = Path(temp)
             deadline = time.monotonic() + bounded_int('WORKER_JOB_TIMEOUT_SECONDS', 14400, 60, 14400)
-            def run(args, timeout=1800):
-                run_command(args, timeout, lease, work, deadline, max_disk)
+            def run(args, timeout=1800, failure_code='PROCESS_FAILED'):
+                run_command(args, timeout, lease, work, deadline, max_disk, failure_code)
             raw, normalized, dataset, trained, exported, delivery = [work / name for name in ('raw', 'normalized', 'dataset', 'trained', 'exported', 'delivery')]
             for folder in (raw, normalized, delivery):
                 folder.mkdir()
@@ -226,7 +226,7 @@ def execute_job(api, job):
             write_json(manifest, {'files': records})
             run(['node', ROOT / 'bridge.mjs', 'download', manifest])
             lease.set(5, 'validation')
-            run([sys.executable, ROOT / 'images.py', manifest], 600)
+            run([sys.executable, ROOT / 'images.py', manifest], 600, 'CAPTURE_INVALID_IMAGES')
             lease.set(10, 'colmap')
             run(['ns-process-data', 'images', '--data', normalized, '--output-dir', dataset,
                  '--matching-method', 'exhaustive', '--sfm-tool', 'colmap', '--num-downscales', '2'],

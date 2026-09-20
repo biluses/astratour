@@ -6,7 +6,7 @@ Corte: **20 de septiembre de 2026**. Las comprobaciones sintéticas no acreditan
 |---|---|
 | TypeScript | Sin errores |
 | Vitest + PostgreSQL/PGlite | 31 pruebas correctas: ownership, pago, límites, cola, fencing, visor y recuperación de cargas |
-| Python worker | 12 pruebas de contratos correctas; no CUDA ni COLMAP |
+| Python worker | 14 pruebas de contratos/subprocesos: incluye timeout y código de error seguro; no CUDA |
 | Next.js 15.5.25 build | Correcto, Node 22, JavaScript inicial estimado 156 kB |
 | UI Chromium | Desktop 1440×1000 y móvil 390×844: HTTP 200, cuatro pasos, sin overflow ni errores de ejecución |
 | Conversión real CPU sintética | 1024 gaussianas PLY → SOG → HTML autónomo con SplatTransform 3.4.2 |
@@ -28,9 +28,17 @@ Los tests SQL usan el esquema real y PGlite. Se ejercitan separación de propiet
 
 La prueba del visor sí ejecuta SplatTransform y Chromium reales, pero su entrada es una esfera sintética creada para el test. No representa un inmueble ni fotos reconstruidas. El render offline prueba el formato de entrega sin dependencia de una sesión de AstraTour.
 
+## Verificación adicional con captura privada
+
+Se ejecutó un diagnóstico CPU de COLMAP con una captura de 20 imágenes facilitada para las pruebas. El mayor modelo registró 3/20 cámaras (15 %), con 36 puntos 3D; no cumplió el umbral de aceptación. No se entrenó Splatfacto ni se contrataron recursos GPU. Las imágenes, los nombres y la geometría permanecen exclusivamente en archivos locales ignorados.
+
+La herramienta de diagnóstico usa PyCOLMAP 4.2.0 con cámaras independientes, no la versión ni la configuración del contenedor de producción. Sus resultados no son un tour ni un test end-to-end del worker.
+
+Google: una página nueva de Chrome en el dominio público muestra una sesión válida. Neon contiene el usuario Google esperado. Se comprobó una sesión existente, no se simuló ni se forzó una autenticación.
+
 ## Pendiente de verificación integrada
 
-- Google OAuth: sustituir el callback del alias largo protegido por el dominio público (pendiente de confirmación), comprobar login y persistencia del usuario.
+- Google: sesión autenticada y usuario persistido verificados en el dominio público; falta probar altas de otros usuarios autorizados.
 - Reclamar el sandbox Stripe exclusivo creado (caduca el 27/09/2026 si no se reclama), obtener clave permanente, crear webhook y verificar Checkout completo de pruebas. Pendiente de elección de cuenta contenedora.
 - Construir/ejecutar Docker NVIDIA y procesar una captura real autorizada.
 - Confirmar calidad, cámara/orientación, consumo, duración y coste reales; validar recuperación con interrupción de GPU.

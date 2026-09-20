@@ -3,6 +3,8 @@ import importlib.util
 import json
 from pathlib import Path
 import tempfile
+import sys
+import time
 import unittest
 import uuid
 from unittest.mock import patch
@@ -90,6 +92,30 @@ class WorkerContracts(unittest.TestCase):
             with patch.dict(worker.os.environ, {'ASTRATOUR_API_URL': origin, 'RECONSTRUCTION_WORKER_SECRET': 'a' * 40}):
                 with self.assertRaises(ValueError):
                     worker.API()
+
+    def test_failed_child_reports_safe_stage_code(self):
+        class Lease:
+            def check(self):
+                pass
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaises(worker.JobError) as caught:
+                worker.run_command([sys.executable, '-c', 'raise ValueError("private detail")'],
+                                   10, Lease(), Path(directory), time.monotonic() + 30,
+                                   1024**3, 'CAPTURE_INVALID_IMAGES')
+            self.assertEqual(caught.exception.code, 'CAPTURE_INVALID_IMAGES')
+            self.assertNotIn('private detail', str(caught.exception))
+
+    def test_timed_out_child_is_stopped(self):
+        class Lease:
+            def check(self):
+                pass
+        with tempfile.TemporaryDirectory() as directory:
+            started = time.monotonic()
+            with self.assertRaises(worker.JobError) as caught:
+                worker.run_command([sys.executable, '-c', 'import time; time.sleep(30)'],
+                                   0, Lease(), Path(directory), time.monotonic() + 30, 1024**3)
+            self.assertEqual(caught.exception.code, 'PROCESS_TIMEOUT')
+            self.assertLess(time.monotonic() - started, 15)
 
     def test_numeric_configuration_is_bounded(self):
         with patch.dict(worker.os.environ, {'WORKER_MAX_ITERATIONS': '-1'}):
