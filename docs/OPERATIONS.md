@@ -3,9 +3,10 @@
 ## Fronteras de entorno
 
 - GitHub: `biluses/astratour`.
-- Vercel: `astratour`, equipo `biluses-projects`; dominio canónico previsto `https://astratour-biluses-projects.vercel.app`.
+- Vercel: `astratour`, equipo `biluses-projects`; dominio público canónico `https://astratour.vercel.app`.
 - Blob privado: `astratour-private`, Frankfurt.
 - Neon: `astratour-db`, Frankfurt. Development y production comparten actualmente el piloto; crear una rama/base independiente antes de operaciones comerciales.
+- El alias largo `astratour-biluses-projects.vercel.app` está protegido por Vercel SSO. No utilizarlo para callbacks/webhooks ni desactivar la protección de los deployments.
 - Google: proyecto `strong-retina-509120-t0`, cliente web AstraTour, audiencia de pruebas.
 - Stripe: únicamente sandbox AstraTour. Nunca usar la configuración CLI por defecto del ordenador: pertenece a otro proyecto.
 

@@ -13,7 +13,14 @@ Corte: **20 de septiembre de 2026**. Las comprobaciones sintéticas no acreditan
 | SuperSplat 1.31.2 alojado | Primer frame con CSP de producción, sin recursos externos ni errores de ejecución |
 | Pack HTML sin conexión | Primer frame desde file:// con contexto offline |
 | Auditoría dependencias runtime | 0 vulnerabilidades conocidas en aplicación y worker al corte |
-| Neon remoto | Migraciones 001 y 002 aplicadas previamente; volver a comprobar tras despliegue |
+| Neon remoto | Consulta real de schema_migrations: 001 y 002 verificadas |
+| Blob privado remoto | Escritura, lectura exacta y eliminación de un objeto temporal propio verificadas |
+| GitHub | Commit d44245f publicado en main, SHA local/remota coincidentes |
+| GitHub Actions | [Run 35510643767](https://github.com/biluses/astratour/actions/runs/35510643767) correcto, incluidos UI y visor en Linux |
+| Vercel | Deployment dpl_CGYkt4m1V7LZwZoi2JdzNtHhrEck READY; funciones fra1 |
+| Web pública | https://astratour.vercel.app HTTP 200, UI desktop/móvil correcta |
+| APIs desplegadas sin sesión | Modelo, visor, ZIP, worker y mantenimiento devuelven 401; webhook sin firma 400 |
+| Gate de GPU remoto | Worker autenticado rechazado con 503 mientras la reconstrucción está deshabilitada |
 
 ## Qué se prueba y qué no
 
@@ -23,9 +30,8 @@ La prueba del visor sí ejecuta SplatTransform y Chromium reales, pero su entrad
 
 ## Pendiente de verificación integrada
 
-- GitHub push, CI remota, despliegue Vercel y alias canónico: registrar evidencia al completarlos.
-- Google OAuth desplegado, escritura del usuario en Neon y acceso privado a Blob.
-- Reclamar sandbox Stripe exclusivo; crear webhook y verificar Checkout completo de pruebas.
+- Google OAuth: sustituir el callback del alias largo protegido por el dominio público (pendiente de confirmación), comprobar login y persistencia del usuario.
+- Reclamar el sandbox Stripe exclusivo creado (caduca el 27/09/2026 si no se reclama), obtener clave permanente, crear webhook y verificar Checkout completo de pruebas. Pendiente de elección de cuenta contenedora.
 - Construir/ejecutar Docker NVIDIA y procesar una captura real autorizada.
 - Confirmar calidad, cámara/orientación, consumo, duración y coste reales; validar recuperación con interrupción de GPU.
 - Recorrido completo de propietario: fotos → GPU → renders → pago test → SOG/HTML/ZIP.
