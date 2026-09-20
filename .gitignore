@@ -1,0 +1,19 @@
+node_modules/
+.next/
+.env*
+!.env.example
+.vercel/
+*.tsbuildinfo
+test-results/
+playwright-report/
+.vercel
+
+# Generated vendor bundle and private deployment files
+public/viewer/
+.secrets/
+.agents/
+.DS_Store
+__pycache__/
+*.pyc
+skills-lock.json
+docs/screenshots/

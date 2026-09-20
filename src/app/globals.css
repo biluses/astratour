@@ -1,0 +1,36 @@
+@import 'tailwindcss';
+
+@theme inline {
+  --color-background: #0b0b0e;
+  --color-foreground: #f4f4f7;
+  --color-card: #121216;
+  --color-card-foreground: #f4f4f7;
+  --color-primary: #b6a0ff;
+  --color-primary-foreground: #171025;
+  --color-secondary: #202026;
+  --color-muted: #1a1a20;
+  --color-muted-foreground: #aaaab6;
+  --color-border: #2a2a33;
+  --color-ring: #b6a0ff;
+  --color-success: #9adaaf;
+  --font-sans: Arial, Helvetica, ui-sans-serif, system-ui, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+:root { color-scheme: dark; }
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; scroll-padding-top: 2rem; }
+body { margin: 0; background: var(--color-background); color: var(--color-foreground); font-size: 16px; }
+::selection { background: #b6a0ff; color: #171025; }
+button, a, input { -webkit-tap-highlight-color: transparent; }
+button:not(:disabled), [role=button]:not([aria-disabled=true]) { cursor: pointer; }
+input:focus-visible, [tabindex]:focus-visible { outline: 2px solid var(--color-ring); outline-offset: 4px; }
+.work-grid { background-image: linear-gradient(#ffffff04 1px,transparent 1px),linear-gradient(90deg,#ffffff04 1px,transparent 1px); background-size: 40px 40px; }
+.scan-line { animation: scan 2.8s ease-in-out infinite; }
+.loading-bar { animation: loading 1.6s ease-in-out infinite; }
+@keyframes scan { 0%,100% { transform: translateY(-35px); opacity: .25; } 50% { transform: translateY(35px); opacity: .8; } }
+@keyframes loading { 0% { transform: translateX(-100%); } 100% { transform: translateX(300%); } }
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  *,*::before,*::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
+}

@@ -1,0 +1,57 @@
+{
+  "name": "astratour-express",
+  "version": "1.0.0",
+  "private": true,
+  "engines": {
+    "node": "22.x"
+  },
+  "scripts": {
+    "dev": "next dev --hostname 0.0.0.0",
+    "build": "next build",
+    "start": "next start --hostname 0.0.0.0",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:ui": "node scripts/run-smoke.mjs",
+    "db:migrate": "node --env-file=.env.local scripts/migrate.mjs",
+    "predev": "node scripts/sync-viewer.mjs",
+    "prebuild": "node scripts/sync-viewer.mjs",
+    "test:worker": "python3 -m unittest discover -s worker/tests -v",
+    "check": "npm run typecheck && npm test && npm run test:worker",
+    "env:check": "node --env-file-if-exists=.env.local scripts/check-env.mjs",
+    "test:viewer": "node scripts/test-viewer.mjs"
+  },
+  "dependencies": {
+    "@neondatabase/serverless": "1.1.0",
+    "@playcanvas/supersplat-viewer": "1.31.2",
+    "@vercel/blob": "2.8.0",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "fflate": "^0.8.2",
+    "lucide-react": "^0.577.0",
+    "next": "15.5.25",
+    "next-auth": "5.0.0-beta.32",
+    "radix-ui": "^1.4.3",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "server-only": "^0.0.1",
+    "sharp": "^0.35.4",
+    "stripe": "22.6.2",
+    "tailwind-merge": "^3.5.0",
+    "zod": "^4.3.6"
+  },
+  "overrides": {
+    "postcss": "^8.5.23",
+    "sharp": "$sharp"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "^0.3.14",
+    "@playwright/test": "^1.58.0",
+    "@tailwindcss/postcss": "^4.2.0",
+    "@types/node": "^22.19.0",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "tailwindcss": "^4.2.0",
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.18"
+  }
+}

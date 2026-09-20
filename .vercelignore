@@ -1,0 +1,8 @@
+worker/
+.secrets/
+.agents/
+tests/
+docs/screenshots/
+playwright-report/
+test-results/
+.env*
