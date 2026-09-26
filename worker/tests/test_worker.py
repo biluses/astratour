@@ -17,7 +17,7 @@ spec.loader.exec_module(worker)
 def job():
     identifiers = {key: str(uuid.uuid4()) for key in ('id', 'tourId', 'userId', 'token')}
     images = []
-    for index in range(20):
+    for index in range(worker.MIN_IMAGES):
         uid = str(uuid.uuid4())
         images.append({'id': uid, 'path': f"sources/{identifiers['userId']}/{identifiers['tourId']}/{uid}.jpg",
                        'name': '../../untrusted.jpg', 'contentType': 'image/jpeg', 'sizeBytes': 1234, 'ordinal': index})
@@ -54,6 +54,22 @@ class WorkerContracts(unittest.TestCase):
         with self.assertRaises(worker.JobError):
             worker.validate_job(value)
 
+    def test_default_minimum_is_forty_photos(self):
+        self.assertEqual(worker.MIN_IMAGES, 40)
+        value = job()
+        self.assertEqual(len(value['images']), 40)
+        worker.validate_job(value)
+        value['images'] = value['images'][:39]
+        with self.assertRaises(worker.JobError):
+            worker.validate_job(value)
+
+    def test_registration_below_forty_cameras_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            dataset = Path(directory)
+            (dataset / 'transforms.json').write_text(json.dumps({'frames': [{'file_path': f'images/{i}.jpg'} for i in range(39)]}))
+            with self.assertRaises(worker.JobError):
+                worker.capture_quality(dataset, 39, worker.MIN_IMAGES, 0.8)
+
     def test_rejects_oversized_image(self):
         value = job()
         value['images'][0]['sizeBytes'] = worker.MAX_FILE + 1
@@ -75,17 +91,17 @@ class WorkerContracts(unittest.TestCase):
     def test_registration_quality_is_not_just_success_exit_code(self):
         with tempfile.TemporaryDirectory() as directory:
             dataset = Path(directory)
-            (dataset / 'transforms.json').write_text(json.dumps({'frames': [{'file_path': f'images/{i}.jpg'} for i in range(20)]}))
-            self.assertEqual(worker.capture_quality(dataset, 20, 20, 0.8), 20)
+            (dataset / 'transforms.json').write_text(json.dumps({'frames': [{'file_path': f'images/{i}.jpg'} for i in range(40)]}))
+            self.assertEqual(worker.capture_quality(dataset, 40, worker.MIN_IMAGES, 0.8), 40)
             with self.assertRaises(worker.JobError):
-                worker.capture_quality(dataset, 100, 20, 0.8)
+                worker.capture_quality(dataset, 100, worker.MIN_IMAGES, 0.8)
 
     def test_duplicate_registered_frames_do_not_inflate_quality(self):
         with tempfile.TemporaryDirectory() as directory:
             dataset = Path(directory)
-            (dataset / 'transforms.json').write_text(json.dumps({'frames': [{'file_path': 'images/same.jpg'}] * 20}))
+            (dataset / 'transforms.json').write_text(json.dumps({'frames': [{'file_path': 'images/same.jpg'}] * 40}))
             with self.assertRaises(worker.JobError):
-                worker.capture_quality(dataset, 20, 20, 0.8)
+                worker.capture_quality(dataset, 40, worker.MIN_IMAGES, 0.8)
 
     def test_api_rejects_remote_http_and_embedded_credentials(self):
         for origin in ('http://api.example.com', 'https://user:pass@example.com', 'https://example.com/path'):

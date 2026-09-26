@@ -34,5 +34,6 @@ export function reconstructionConfigured(): boolean {
 export function minReconstructionImages(): number {
   const value = Number(process.env.RECONSTRUCTION_MIN_IMAGES ?? MIN_CAPTURE_FILES);
   if (!Number.isInteger(value) || value < 3 || value > MAX_FILES) throw new Error('Invalid RECONSTRUCTION_MIN_IMAGES');
-  return value;
+  // The env can raise the evidence-backed floor (docs/CAPTURE.md) but never lower it; stale values like 20 are lifted.
+  return Math.max(value, MIN_CAPTURE_FILES);
 }

@@ -19,8 +19,9 @@ try {
 check(/^sk_test_\S+$/.test(env.STRIPE_SECRET_KEY || ''), 'STRIPE_SECRET_KEY exclusivamente test');
 check(/^whsec_\S+$/.test(env.STRIPE_WEBHOOK_SECRET || ''), 'STRIPE_WEBHOOK_SECRET');
 check(['true', 'false'].includes(env.RECONSTRUCTION_ENABLED), 'RECONSTRUCTION_ENABLED explícito');
-const minimum = Number(env.RECONSTRUCTION_MIN_IMAGES ?? 20);
+const minimum = Number(env.RECONSTRUCTION_MIN_IMAGES ?? 40);
 check(Number.isInteger(minimum) && minimum >= 3 && minimum <= 500, 'RECONSTRUCTION_MIN_IMAGES (3–500)');
+if (minimum < 40) console.log('INFO RECONSTRUCTION_MIN_IMAGES < 40: la aplicación y el worker aplican 40 como mínimo.');
 if (env.RECONSTRUCTION_ENABLED === 'false') console.log('INFO Captura y reconstrucción deshabilitadas: pendiente de puesta en servicio GPU.');
 console.log(failures.length ? `${failures.length} comprobaciones fallidas.` : 'Configuración válida. Esto no prueba conectividad ni reconstrucción.');
 process.exitCode = failures.length ? 1 : 0;

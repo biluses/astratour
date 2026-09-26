@@ -25,6 +25,7 @@ import zipfile
 ROOT = Path(__file__).resolve().parent
 MAX_FILE = 10 * 1024**2
 MAX_TOTAL = 2 * 1024**3
+MIN_IMAGES = 40  # Validated count and registered-camera gate; mirrors MIN_CAPTURE_FILES in src/lib/contracts.ts.
 
 
 class JobError(Exception):
@@ -40,7 +41,7 @@ def bounded_int(name, default, minimum, maximum):
     return value
 
 
-def validate_job(job, minimum=20):
+def validate_job(job, minimum=MIN_IMAGES):
     for key in ('id', 'tourId', 'userId', 'token'):
         if str(uuid.UUID(job[key])) != job[key]:
             raise ValueError('Invalid job identifier')
@@ -197,7 +198,8 @@ def capture_quality(dataset, expected, minimum, ratio):
 
 
 def execute_job(api, job):
-    minimum = bounded_int('WORKER_MIN_IMAGES', 20, 3, 500)
+    # The env can raise MIN_IMAGES but never lower it below the evidence-backed floor.
+    minimum = max(bounded_int('WORKER_MIN_IMAGES', MIN_IMAGES, 3, 500), MIN_IMAGES)
     validate_job(job, minimum)
     workspace = Path(os.environ.get('WORKER_WORK_DIR', '/work')).resolve()
     workspace.mkdir(parents=True, exist_ok=True)

@@ -77,7 +77,7 @@ def assess(source, output):
               'verifiedImagePairs': verified_pairs, 'models': components,
               'largestConnectedReconstruction': largest, 'largestFraction': largest / len(files),
               'productionSingleCameraCompatible': len(dimensions) == 1,
-              'meetsDefaultRegistrationGate': largest >= 20 and largest / len(files) >= 0.8,
+              'meetsDefaultRegistrationGate': largest >= 40 and largest / len(files) >= 0.8,
               'elapsedSeconds': round(time.monotonic() - started, 2),
               'trainedGaussianModel': False}
     (output / 'report.json').write_text(json.dumps(report, indent=2))

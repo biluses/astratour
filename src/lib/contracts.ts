@@ -2,7 +2,8 @@ import { z } from 'zod';
 
 export const PRICE_CENTS = 1900;
 export const MAX_FILES = 500;
-export const MIN_CAPTURE_FILES = 20;
+export const MIN_CAPTURE_FILES = 40;
+export const RECOMMENDED_CAPTURE_FILES = 60;
 export const MAX_FILE_BYTES = 10 * 1024 * 1024;
 export const MAX_TOTAL_BYTES = 2 * 1024 * 1024 * 1024;
 export const uuidSchema = z.uuid();

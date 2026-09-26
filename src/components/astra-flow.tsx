@@ -1,6 +1,7 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import Link from 'next/link';
 import Image from 'next/image';
 import dynamic from 'next/dynamic';
 import { signIn, signOut } from 'next-auth/react';
@@ -10,7 +11,8 @@ import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
-import { createTourSchema, MAX_FILES, MAX_TOTAL_BYTES, type TourView } from '@/lib/contracts';
+import { createTourSchema, MAX_FILES, MAX_TOTAL_BYTES, RECOMMENDED_CAPTURE_FILES, type TourView } from '@/lib/contracts';
+import { analyzeFile, summarize, type CaptureAnalysis } from '@/lib/capture-checks';
 import { cn } from '@/lib/utils';
 
 const TourViewer = dynamic(() => import('@/components/tour-viewer').then(m => m.TourViewer), {
@@ -28,7 +30,7 @@ interface Props {
   checkoutReturn: 'success' | 'cancelled' | null;
 }
 type Job = { tourId: string; uploads: { imageId: string; pathname: string }[]; completed: Set<string> };
-type Busy = 'upload' | 'process' | 'checkout' | 'signin' | null;
+type Busy = 'analyze' | 'upload' | 'process' | 'checkout' | 'signin' | null;
 
 function reconstructionError(tour: TourView) {
   const messages: Record<string, string> = {
@@ -83,6 +85,8 @@ export function AstraFlow({ user, initialTour, initialError, accessReady, paymen
   const [tour, setTour] = useState(initialTour);
   const [files, setFiles] = useState<File[]>([]);
   const [thumbnails, setThumbnails] = useState<string[]>([]);
+  const [analyses] = useState(() => new WeakMap<File, CaptureAnalysis>());
+  const checks = useMemo(() => summarize(files.flatMap(f => analyses.get(f) ?? [])), [files, analyses]);
   const [title, setTitle] = useState('');
   const [error, setError] = useState(initialError);
   const [busy, setBusy] = useState<Busy>(null);
@@ -145,14 +149,24 @@ export function AstraFlow({ user, initialTour, initialError, accessReady, paymen
     return () => { cancelled = true; clearTimeout(timer); };
   }, [tour?.id, tour?.status, paid, paymentWaiting]);
 
-  function chooseFiles(incoming: File[]) {
+  async function chooseFiles(incoming: File[]) {
     if (!canSelect) return;
     const next = [...files, ...incoming];
     if (!createTourSchema.safeParse({ files: next.map(f => ({ name: f.name, size: f.size, type: f.type })) }).success) {
       setError(`Selecciona hasta ${MAX_FILES} fotos JPG o PNG: 10 MB por imagen y ${Math.round(MAX_TOTAL_BYTES / 1024 ** 3)} GB en total.`);
       return;
     }
-    setFiles(next); setError(null);
+    setError(null); setBusy('analyze'); setProgress(0);
+    try {
+      // ponytail: sequential decode bounds memory with hundreds of 12-48 MP photos; add a small pool if it proves slow.
+      for (const [index, file] of incoming.entries()) {
+        if (!analyses.has(file)) {
+          try { analyses.set(file, await analyzeFile(file)); } catch { analyses.set(file, { name: file.name, unreadable: true }); }
+        }
+        setProgress((index + 1) / incoming.length * 100);
+      }
+      setFiles(next);
+    } finally { setBusy(null); }
   }
 
   async function process(id: string) {
@@ -164,11 +178,12 @@ export function AstraFlow({ user, initialTour, initialError, accessReady, paymen
 
   async function generate() {
     if (!user || busy || reconstructing || !reconstructionReady) return;
+    if (files.length && checks.blocking.length) return;
     if (files.length && files.length < minimumImages) { setError(`Para reconstruir una escena necesitas al menos ${minimumImages} fotos solapadas. La calidad depende de la captura.`); return; }
     setError(null); setNotice(null);
     try {
       if (files.length) {
-        setBusy('upload');
+        setBusy('upload'); setProgress(0);
         if (!job.current) {
           const created = await api<Omit<Job, 'completed'>>('/api/tours', { method: 'POST', body: JSON.stringify({
             title: title.trim() || 'Mi propiedad', files: files.map(f => ({ name: f.name, size: f.size, type: f.type })),
@@ -280,26 +295,29 @@ export function AstraFlow({ user, initialTour, initialError, accessReady, paymen
               <label htmlFor="property-title" className="mb-2 block text-sm text-muted-foreground">Nombre de la propiedad <span className="text-xs">(opcional)</span></label>
               <input id="property-title" value={title} onChange={e => setTitle(e.target.value)} disabled={!canSelect} maxLength={120}
                 placeholder="Ej. Ático en Chamberí" className="mb-5 h-11 w-full rounded-lg border border-border bg-background px-3 text-sm placeholder:text-muted-foreground/60 disabled:opacity-50" />
-              <input ref={input} type="file" multiple accept="image/jpeg,image/png" disabled={!canSelect} className="sr-only" tabIndex={-1} aria-label="Seleccionar imágenes JPG o PNG" onChange={e => { chooseFiles(Array.from(e.target.files ?? [])); e.target.value = ''; }} />
+              <input ref={input} type="file" multiple accept="image/jpeg,image/png" disabled={!canSelect} className="sr-only" tabIndex={-1} aria-label="Seleccionar imágenes JPG o PNG" onChange={e => { void chooseFiles(Array.from(e.target.files ?? [])); e.target.value = ''; }} />
               <div role="button" aria-label="Arrastra imágenes o pulsa para seleccionarlas" aria-disabled={!canSelect} tabIndex={canSelect ? 0 : -1}
                 onClick={() => canSelect && input.current?.click()}
                 onKeyDown={e => { if (canSelect && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); input.current?.click(); } }}
                 onDragOver={e => { e.preventDefault(); if (canSelect) setDragging(true); }} onDragLeave={() => setDragging(false)}
-                onDrop={e => { e.preventDefault(); setDragging(false); chooseFiles(Array.from(e.dataTransfer.files)); }}
+                onDrop={e => { e.preventDefault(); setDragging(false); void chooseFiles(Array.from(e.dataTransfer.files)); }}
                 className={cn('flex min-h-48 flex-col items-center justify-center rounded-xl border border-dashed border-border bg-background p-6 text-center transition-colors', dragging && 'border-primary bg-primary/10', !user && 'opacity-55', canSelect && 'hover:border-primary/60 hover:bg-primary/3')}>
                 <div className="mb-4 flex size-12 items-center justify-center rounded-xl bg-secondary text-primary">{user ? <UploadCloud className="size-6" strokeWidth={1.5} /> : <LockKeyhole className="size-5" />}</div>
                 <p className="text-base font-medium">{user ? 'Arrastra tus fotos aquí' : 'Conecta tu cuenta para subir fotos'}</p>
                 <p className="mt-1.5 text-sm text-muted-foreground">{user ? <>o <span className="text-primary underline decoration-primary/40 underline-offset-4">selecciona archivos</span> desde tu dispositivo</> : 'Después podrás elegir las imágenes de tu propiedad.'}</p>
                 <p className="mt-4 font-mono text-xs text-muted-foreground">JPG / PNG · 10 MB por foto · 2 GB en total</p>
               </div>
+              {busy === 'analyze' ? <p role="status" aria-live="polite" className="mt-4 flex items-center gap-2 text-sm text-muted-foreground"><LoaderCircle className="size-4 animate-spin text-primary" />Analizando fotos… {Math.round(progress)}%</p> : null}
+              {checks.blocking.length ? <div role="alert" className="mt-4 rounded-xl border border-red-400/30 bg-red-400/8 p-4 text-sm leading-relaxed text-red-200"><p className="flex items-center gap-2 font-medium"><CircleAlert className="size-4 shrink-0" />Corrige esto antes de generar</p><ul className="mt-2 list-disc space-y-1 pl-6">{checks.blocking.map(m => <li key={m}>{m}</li>)}</ul></div> : null}
+              {checks.warnings.length ? <div role="status" className="mt-4 rounded-xl border border-amber-400/30 bg-amber-400/8 p-4 text-sm leading-relaxed text-amber-200"><p className="flex items-center gap-2 font-medium"><CircleAlert className="size-4 shrink-0" />Revisa estas fotos</p><ul className="mt-2 list-disc space-y-1 pl-6">{checks.warnings.map(m => <li key={m}>{m}</li>)}</ul></div> : null}
               {files.length ? <div className="mt-4 grid grid-cols-3 gap-3 sm:grid-cols-6">{files.slice(0, 60).map((file, i) => <div key={`${file.name}-${i}`} className="group relative aspect-square overflow-hidden rounded-lg border border-border bg-background">
                 {thumbnails[i] ? <Image src={thumbnails[i]} alt={file.name} fill unoptimized className="object-cover" sizes="150px" /> : null}
                 {!job.current ? <Button variant="secondary" size="icon" className="absolute right-1 top-1 size-7 bg-black/70" aria-label={`Quitar ${file.name}`} disabled={Boolean(busy)} onClick={() => setFiles(v => v.filter((_, index) => index !== i))}><X className="size-3" /></Button> : null}
                 <span className="absolute inset-x-0 bottom-0 truncate bg-black/70 px-2 py-1 text-xs">{file.name}</span>
               </div>)}</div> : null}
               {files.length > 60 ? <p className="mt-3 text-xs text-muted-foreground">Mostrando las primeras 60 miniaturas de {files.length} fotos seleccionadas.</p> : null}
-              <div className="mt-5 flex flex-wrap items-center justify-between gap-4"><p className="text-xs text-muted-foreground">Al menos {minimumImages} fotos. Solapamiento del 70–80 %, buena luz y sin objetos en movimiento. Usa la misma cámara, resolución y orientación; no mezcles recortes ni versiones retocadas.</p>
-                <Button onClick={() => void generate()} disabled={!user || isWorking || Boolean(busy) || !reconstructionReady || (files.length ? files.length < minimumImages : !tour)}>
+              <div className="mt-5 flex flex-wrap items-center justify-between gap-4"><p className="max-w-xl text-xs leading-relaxed text-muted-foreground">Mínimo {minimumImages} fotos; recomendamos {RECOMMENDED_CAPTURE_FILES}–80 por estancia. Cada zona debe salir en al menos 3 fotos: gira como máximo unos 20° entre tomas (un tercio del encuadre) y da un paso entre grupos de fotos en lugar de girar sobre ti mismo. Misma cámara, sin zoom y sin mezclar fotos verticales y horizontales. <Link href="/guia-captura" className="text-primary underline decoration-primary/40 underline-offset-4">Consulta la guía de captura</Link>.</p>
+                <Button onClick={() => void generate()} disabled={!user || isWorking || Boolean(busy) || !reconstructionReady || checks.blocking.length > 0 || (files.length ? files.length < minimumImages : !tour)}>
                   {isWorking ? <LoaderCircle className="animate-spin" /> : <Sparkles />}{isWorking ? 'Procesando…' : tour && !files.length ? 'Reintentar generación' : 'Generar previsualización'}{!isWorking ? <ArrowRight /> : null}
                 </Button></div>
             </> : <div className="flex items-center justify-between gap-4 rounded-xl bg-background px-4 py-4"><div className="flex items-center gap-3"><ImagePlus className="size-5 text-primary" /><div><p className="text-sm font-medium">{tour?.title}</p><p className="mt-1 text-xs text-muted-foreground">{tour?.images.length} imágenes procesadas y guardadas</p></div></div><Check className="size-5 text-success" /></div>}

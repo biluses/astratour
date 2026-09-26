@@ -22,7 +22,7 @@ flowchart LR
   W -->|Solo propietario pagado| V[SuperSplat + ZIP privado]
 ```
 
-- 20–500 fotografías por captura, 10 MiB por imagen y 2 GiB en total; mínimo configurable. Estas cotas son operativas, no garantía de reconstrucción.
+- 40–500 fotografías por captura (se recomiendan 60–80 por estancia), 10 MiB por imagen y 2 GiB en total; mínimo configurable. Estas cotas son operativas, no garantía de reconstrucción.
 - Cola persistente con un trabajo por tour; bloqueo PostgreSQL, máximo tres intentos, lease de cinco minutos y heartbeat. Tokens de intento impiden que un worker antiguo publique resultados.
 - Originales y resultados privados. Antes del pago solo se entregan renders raster con marca de agua, no el modelo completo.
 - Después del pago de prueba: visor autenticado y ZIP con `scene.sog`, HTML autónomo, manifiesto y licencias. La copia descargada es portable; no se presenta como DRM.

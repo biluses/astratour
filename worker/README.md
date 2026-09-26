@@ -35,7 +35,7 @@ El proceso corre como UID/GID 10001. El volumen debe permitirle escribir; no amp
 
 1. Reclamar trabajo con lease y token; descargar únicamente las rutas reservadas.
 2. Verificar bytes/MIME reales, límites, orientación EXIF y resolución; eliminar metadatos al normalizar.
-3. COLMAP sobre la secuencia normalizada; exigir ≥20 cámaras y ≥80 % de registro por defecto.
+3. COLMAP sobre la secuencia normalizada; exigir ≥40 cámaras y ≥80 % de registro por defecto.
 4. Entrenar Splatfacto; exportar el PLY. Límite total de intento: cuatro horas.
 5. Renderizar el modelo entrenado con cámaras registradas; incrustar marca de agua en los píxeles.
 6. Rotar escena y cámara de z-up a y-up; convertir a SOG con codificación CPU.
