@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import shutil
 import signal
+import struct
 import subprocess
 import sys
 import tempfile
@@ -189,6 +190,24 @@ def write_json(path, content):
     path.chmod(0o600)
 
 
+def promote_largest_model(dataset):
+    """COLMAP can split a capture into several models; ns-process-data 1.1.5 always converts sparse/0.
+    Move the model with most registered images to sparse/0. Returns True when the dataset must be regenerated."""
+    sparse = dataset / 'colmap' / 'sparse'
+    counts = {}
+    for model in sparse.iterdir() if sparse.is_dir() else ():
+        images_bin = model / 'images.bin'
+        if model.is_dir() and images_bin.is_file():
+            with images_bin.open('rb') as handle:
+                counts[model.name] = struct.unpack('<Q', handle.read(8))[0]
+    largest = max(counts, key=counts.get, default='0')
+    if largest == '0' or counts.get('0', 0) >= counts[largest]:
+        return False
+    (sparse / '0').rename(sparse / f'discarded-{time.monotonic_ns()}')
+    (sparse / largest).rename(sparse / '0')
+    return True
+
+
 def capture_quality(dataset, expected, minimum, ratio):
     frames = json.loads((dataset / 'transforms.json').read_text())['frames']
     names = {Path(frame['file_path']).name for frame in frames}
@@ -233,6 +252,10 @@ def execute_job(api, job):
             run(['ns-process-data', 'images', '--data', normalized, '--output-dir', dataset,
                  '--matching-method', 'exhaustive', '--sfm-tool', 'colmap', '--num-downscales', '2'],
                 bounded_int('WORKER_COLMAP_TIMEOUT_SECONDS', 3600, 60, 7200))
+            if promote_largest_model(dataset):
+                # Measured on a 60-photo room: sparse/0 held 2 images while sparse/1 held 49.
+                run(['ns-process-data', 'images', '--data', normalized, '--output-dir', dataset,
+                     '--skip-colmap', '--skip-image-processing', '--num-downscales', '2'], 600)
             ratio = float(os.environ.get('WORKER_MIN_REGISTERED_RATIO', '0.8'))
             if not 0.5 <= ratio <= 1:
                 raise JobError('WORKER_CONFIGURATION_INVALID')

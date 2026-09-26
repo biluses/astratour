@@ -3,6 +3,7 @@ import importlib.util
 import json
 from pathlib import Path
 import tempfile
+import struct
 import sys
 import time
 import unittest
@@ -69,6 +70,18 @@ class WorkerContracts(unittest.TestCase):
             (dataset / 'transforms.json').write_text(json.dumps({'frames': [{'file_path': f'images/{i}.jpg'} for i in range(39)]}))
             with self.assertRaises(worker.JobError):
                 worker.capture_quality(dataset, 39, worker.MIN_IMAGES, 0.8)
+
+    def test_largest_colmap_model_is_promoted_to_sparse_0(self):
+        with tempfile.TemporaryDirectory() as directory:
+            dataset = Path(directory)
+            for name, registered in (('0', 2), ('1', 49)):
+                model = dataset / 'colmap' / 'sparse' / name
+                model.mkdir(parents=True)
+                (model / 'images.bin').write_bytes(struct.pack('<Q', registered))
+            self.assertTrue(worker.promote_largest_model(dataset))
+            header = (dataset / 'colmap' / 'sparse' / '0' / 'images.bin').read_bytes()[:8]
+            self.assertEqual(struct.unpack('<Q', header)[0], 49)
+            self.assertFalse(worker.promote_largest_model(dataset))
 
     def test_rejects_oversized_image(self):
         value = job()
