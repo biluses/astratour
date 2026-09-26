@@ -67,3 +67,23 @@ Benchmark local (sin GPU de pago), reproducible con los scripts privados de `.se
 - Desenfoque: varianza del laplaciano a 512 px de lado largo. En 52 fotos reales nítidas, percentil 5 = 88; con desenfoque gaussiano de 1 px, percentil 95 = 47. Umbral de aviso: 60 (solo aviso: paredes lisas pueden puntuar bajo).
 - No verificado empíricamente: la regla de no girar sobre uno mismo sin desplazarse se basa en la geometría (sin paralaje no hay triangulación), no en este benchmark.
 - Límite: capturas de cámara réflex con tomas espaciadas; deben revalidarse con capturas reales de móvil de viviendas.
+
+### Alternativas para usar menos fotos (27/09/2026, GPU en la nube)
+
+Cámaras registradas y error frente a las poses de referencia (mediana de giro; posición en % de la dispersión de cámaras). COLMAP incremental, una sola cámara:
+
+| Escena · fotos | SIFT (producción) | ALIKED + LightGlue |
+|---|---|---|
+| Una estancia · 24 | 6 · 0,4° | 8 · 1,1° |
+| Una estancia · 30 | 21 · 0,2° | 23 · 2,7° (posición 19 %) |
+| Una estancia · 40 | 24 · 0,2° | **34 · 0,3°** |
+| Varias estancias · 24–40 | 6–19 · 1,5–5,5° | 18–35 · **105–144° (poses erróneas)** |
+
+- ALIKED + LightGlue (licencias comerciales: ALIKED BSD-3, LightGlue Apache-2.0) mejora una estancia con 40 fotos, pero en viviendas con varias estancias empareja zonas parecidas y produce poses falsas. El control actual (porcentaje de cámaras registradas) no detecta poses falsas. No se adopta.
+- El mapeador global de COLMAP registra todas las fotos con 16–40 imágenes, pero con poses erróneas (7–147°). No se adopta.
+- MapAnything (pesos Apache) sin COLMAP: 14–16 dB frente a 20–22 dB con poses de referencia. No se adopta.
+- Generar vistas con IA: ganancias publicadas pequeñas (~0,3 dB) y licencias mayoritariamente no comerciales. No se adopta.
+
+**Pipeline de producción en GPU (RTX 4090, playroom, 60 fotos):** COLMAP 3.9.1 (CPU) 6,5 min (extracción 20 s, emparejamiento exhaustivo 5,5 min); 49/60 cámaras en el mayor modelo; splatfacto 30.000 iteraciones 19 min (incluye ~5 min de compilación JIT de gsplat en el primer uso); evaluación en vistas reservadas PSNR 25,5 dB, SSIM 0,83, LPIPS 0,28; exportación 510.809 gaussianas (127 MB PLY). Coste de GPU ≈ 0,3 USD por estancia a 0,74 USD/h. Con COLMAP con CUDA y gsplat precompilado en la imagen, el tiempo baja.
+
+**Corrección del worker:** COLMAP puede dividir una captura en varios modelos y `ns-process-data` 1.1.5 convierte siempre `sparse/0`. Con 60 fotos de una estancia, `sparse/0` tenía 2 cámaras y `sparse/1`, 49. El worker ahora promueve el modelo con más cámaras antes de comprobar el registro.
