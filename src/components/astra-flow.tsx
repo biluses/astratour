@@ -86,7 +86,7 @@ export function AstraFlow({ user, initialTour, initialError, accessReady, paymen
   const [files, setFiles] = useState<File[]>([]);
   const [thumbnails, setThumbnails] = useState<string[]>([]);
   const [analyses] = useState(() => new WeakMap<File, CaptureAnalysis>());
-  const checks = useMemo(() => summarize(files.flatMap(f => analyses.get(f) ?? [])), [files, analyses]);
+  const checks = useMemo(() => summarize(files.flatMap(f => analyses.get(f) ?? []), minimumImages), [files, analyses, minimumImages]);
   const [title, setTitle] = useState('');
   const [error, setError] = useState(initialError);
   const [busy, setBusy] = useState<Busy>(null);

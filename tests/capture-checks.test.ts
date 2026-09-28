@@ -47,7 +47,7 @@ describe('Capture checks', () => {
 
   it('groups byte-identical duplicates', () => {
     expect(findDuplicates([photo('a.jpg', { sha256: 'x' }), photo('b.jpg', { sha256: 'x' }), photo('c.jpg')])).toEqual([['a.jpg', 'b.jpg']]);
-    expect(summarize([photo('a.jpg', { sha256: 'x' }), photo('b.jpg', { sha256: 'x' })]).blocking[0]).toContain('a.jpg = b.jpg');
+    expect(summarize([photo('a.jpg', { sha256: 'x' }), photo('b.jpg', { sha256: 'x' })], 1).blocking[0]).toContain('a.jpg = b.jpg');
   });
 
   it('scores a sharp checkerboard above a blurred copy and a constant image', () => {
@@ -62,7 +62,7 @@ describe('Capture checks', () => {
 
   it('measures mean luminance and warns on dark or blurry photos', () => {
     expect(meanLuminance(new Uint8Array([0, 255, 0, 255]))).toBe(127.5);
-    const result = summarize([photo('dark.jpg', { luminance: DARK_WARN_THRESHOLD - 1 }), photo('soft.jpg', { sha256: 's', blur: 1 })]);
+    const result = summarize([photo('dark.jpg', { luminance: DARK_WARN_THRESHOLD - 1 }), photo('soft.jpg', { sha256: 's', blur: 1 })], 1);
     expect(result.blocking).toEqual([]);
     expect(result.warnings.join(' ')).toMatch(/soft\.jpg.*dark\.jpg/);
   });
@@ -78,8 +78,14 @@ describe('Capture checks', () => {
     expect(summarize(photos(RECOMMENDED_CAPTURE_FILES)).warnings).toEqual([]);
   });
 
+  it('blocks with the exact number of missing photos below the minimum', () => {
+    const result = summarize([photo('a.jpg'), photo('b.jpg', { sha256: 'b' })], 40);
+    expect(result.blocking[0]).toBe('Tienes 2 fotos; faltan 38 para el mínimo de 40. Añade fotos de la misma estancia siguiendo la guía.');
+    expect(summarize([], 40).blocking).toEqual([]);
+  });
+
   it('warns (never blocks) on files the browser could not analyze and truncates long name lists', () => {
-    const result = summarize([{ name: 'broken.png', unreadable: true }]);
+    const result = summarize([{ name: 'broken.png', unreadable: true }], 1);
     expect(result.blocking).toEqual([]);
     expect(result.warnings[0]).toContain('broken.png');
     expect(listNames(['a', 'b', 'c', 'd', 'e'])).toBe('a, b, c y 2 más');

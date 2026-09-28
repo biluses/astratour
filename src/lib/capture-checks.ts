@@ -68,7 +68,7 @@ export function meanLuminance(gray: ArrayLike<number>): number {
   return gray.length ? sum / gray.length : 0;
 }
 
-export function summarize(results: CaptureAnalysis[]): CaptureSummary {
+export function summarize(results: CaptureAnalysis[], minimum = MIN_CAPTURE_FILES): CaptureSummary {
   const photos = results.filter((r): r is PhotoAnalysis => !('unreadable' in r));
   const unreadable = results.filter(r => 'unreadable' in r).map(r => r.name);
   const { blocking, warnings } = checkDimensions(photos);
@@ -76,7 +76,8 @@ export function summarize(results: CaptureAnalysis[]): CaptureSummary {
   if (unreadable.length) warnings.unshift(`No se han podido comprobar estas fotos en tu navegador: ${listNames(unreadable)}. Asegúrate de que son JPG o PNG originales.`);
   const duplicates = findDuplicates(photos);
   if (duplicates.length) blocking.push(`Hay fotos duplicadas (mismo archivo): ${listNames(duplicates.map(group => group.join(' = ')))}. Quita las copias.`);
-  if (results.length >= MIN_CAPTURE_FILES && results.length < RECOMMENDED_CAPTURE_FILES) warnings.push(`Tienes ${results.length} fotos. Con menos de ${RECOMMENDED_CAPTURE_FILES} por estancia la reconstrucción puede fallar; si puedes, añade más siguiendo la guía.`);
+  if (results.length && results.length < minimum) blocking.unshift(`Tienes ${results.length} fotos; faltan ${minimum - results.length} para el mínimo de ${minimum}. Añade fotos de la misma estancia siguiendo la guía.`);
+  if (results.length >= minimum && results.length < RECOMMENDED_CAPTURE_FILES) warnings.push(`Tienes ${results.length} fotos. Con menos de ${RECOMMENDED_CAPTURE_FILES} por estancia la reconstrucción puede fallar; si puedes, añade más siguiendo la guía.`);
   // Dark photos also score low on blur; report them once, as dark.
   const blurry = photos.filter(p => p.blur < BLUR_WARN_THRESHOLD && p.luminance >= DARK_WARN_THRESHOLD).map(p => p.name);
   if (blurry.length) warnings.push(`Posiblemente movidas o desenfocadas: ${listNames(blurry)}. Repítelas con el móvil estable.`);
