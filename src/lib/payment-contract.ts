@@ -5,6 +5,8 @@ import { PRICE_CENTS, uuidSchema } from '@/lib/contracts';
 const paymentMetadata = z.object({ tourId: uuidSchema, userId: uuidSchema, checkoutKey: uuidSchema });
 export function paidCheckoutIdentity(session: Stripe.Checkout.Session) {
   if (session.payment_status !== 'paid') return null;
+  // Sessions created outside AstraTour (other integrations, `stripe trigger`) are acknowledged, not retried.
+  if (!session.metadata?.checkoutKey) return null;
   if (session.mode !== 'payment' || session.amount_total !== PRICE_CENTS || session.currency !== 'eur' || session.livemode) {
     throw new Error('Payment contract mismatch');
   }

@@ -187,6 +187,9 @@ describe('Stripe contracts and real SQL fulfillment', () => {
       expect(() => paidCheckoutIdentity(session(override))).toThrow();
     }
   });
+  it('ignores paid sessions created outside AstraTour', () => {
+    expect(paidCheckoutIdentity(session({ metadata: {}, amount_total: 3000, currency: 'usd' }))).toBeNull();
+  });
   it('does not fulfill an unpaid completed session', async () => {
     await fulfillCheckout('evt_unpaid', session({ payment_status: 'unpaid' }));
     expect(await orderStatus()).toBe('pendiente_de_pago');
