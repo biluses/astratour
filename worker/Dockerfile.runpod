@@ -12,7 +12,7 @@ RUN curl -fsSL https://nodejs.org/dist/v22.22.2/node-v22.22.2-linux-x64.tar.xz |
 ENV PATH=/opt/ns/bin:/opt/node-v22.22.2-linux-x64/bin:$PATH
 RUN python3 -m venv --system-site-packages /opt/ns \
     && pip install --no-cache-dir -q --ignore-installed blinker nerfstudio==1.1.5 \
-    && pip install --no-cache-dir -q setuptools wheel ninja
+    && pip install --no-cache-dir -q setuptools wheel ninja runpod==1.12.0
 
 # nerfstudio 1.1.5 pins gsplat==1.4.0, whose PyPI wheel JIT-compiles CUDA kernels on first use (~5 min).
 # Rebuild it from source so the ahead-of-time extension gsplat.csrc is imported instead; no GPU needed.
@@ -32,13 +32,14 @@ COPY --chmod=755 run-once.sh /opt/astratour/run-once.sh
 
 # torch >= 2.6 defaults to weights_only loads, which nerfstudio 1.1.5 checkpoints do not support.
 ENV QT_QPA_PLATFORM=offscreen TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1 \
-    WORKER_WORK_DIR=/workspace/work ASTRATOUR_API_URL=https://astratour.vercel.app
+    WORKER_WORK_DIR=/workspace/work ASTRATOUR_API_URL=https://astratour.vercel.app \
+    ASTRATOUR_WORKER_DIR=/opt/astratour/worker WORKER_PYTHON=/opt/ns/bin/python
 WORKDIR /
 
-# Build-only checks; CI builds this target after pushing `runtime`.
+# Build-only checks; CI builds this target before pushing `runtime`.
 FROM runtime AS smoke
 RUN set -eux; \
-    python -c "import nerfstudio, gsplat, gsplat.csrc; print('gsplat', gsplat.__version__, gsplat.csrc.__file__)"; \
+    python -c "import nerfstudio, runpod, gsplat, gsplat.csrc; print('gsplat', gsplat.__version__, gsplat.csrc.__file__)"; \
     so=$(python -c "import gsplat.csrc; print(gsplat.csrc.__file__)"); \
     elfs=$(cuobjdump --list-elf "$so"); \
     for arch in sm_86 sm_89 sm_90 sm_120; do echo "$elfs" | grep -q "$arch"; done; \

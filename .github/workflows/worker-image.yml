@@ -20,19 +20,9 @@ jobs:
     timeout-minutes: 180
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - name: Free disk and move Docker to /mnt
-        run: |
-          df -h / /mnt
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
-          docker system prune -af
-          sudo systemctl stop docker
-          sudo mkdir -p /mnt/docker
-          [ -s /etc/docker/daemon.json ] || echo '{}' | sudo tee /etc/docker/daemon.json
-          sudo jq '. + {"data-root": "/mnt/docker"}' /etc/docker/daemon.json | sudo tee /etc/docker/daemon.tmp
-          sudo mv /etc/docker/daemon.tmp /etc/docker/daemon.json
-          sudo systemctl start docker
-          docker info --format '{{.DockerRootDir}}'
-          df -h / /mnt
+      # ubuntu-latest currently has ~87 GB free on /; an earlier rm/docker-restart step hung the runner.
+      - name: Disk space
+        run: df -h /
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
       - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
@@ -83,4 +73,4 @@ jobs:
         run: |
           size=$(docker buildx imagetools inspect --raw "$IMAGE@$DIGEST" | jq '[.layers[].size] | add / 1e9 * 100 | round / 100')
           { echo "Digest: \`$DIGEST\`"; echo "Compressed size: ${size} GB"; echo "Tags:"; echo "$TAGS" | sed 's/^/- /'; } | tee -a "$GITHUB_STEP_SUMMARY"
-          df -h / /mnt
+          df -h /
