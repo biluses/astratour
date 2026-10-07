@@ -299,13 +299,21 @@ def execute_job(api, job):
             transform = ROOT / 'node_modules' / '.bin' / 'splat-transform'
             model = delivery / 'scene.sog'
             # Nerfstudio PLY exports z-up. Rotate BOTH scene and camera Rx(-90).
-            # CPU SOG encoding avoids relying on a second WebGPU driver stack on CUDA servers.
-            run([transform, '--gpu', 'cpu', ply, '--filter-nan', '--rotate', '-90,0,0', model])
+            # SOG compression k-means: WebGPU takes seconds; the CPU path ran >30 min on 500K gaussians
+            # (Runpod 4090 pod, 07/10/2026). Try the GPU adapter first and fall back to CPU.
+            package_timeout = bounded_int('WORKER_PACKAGE_TIMEOUT_SECONDS', 5400, 60, 10800)
+            device = ['--gpu', '0']
+            try:
+                run([transform, *device, ply, '--filter-nan', '--rotate', '-90,0,0', model], 900)
+            except JobError:
+                model.unlink(missing_ok=True)
+                device = ['--gpu', 'cpu', '--max-workers', str(cpu_quota())]
+                run([transform, *device, ply, '--filter-nan', '--rotate', '-90,0,0', model], package_timeout)
             settings_manifest = work / 'settings-manifest.json'
             settings = work / 'viewer-settings.json'
             write_json(settings_manifest, {'camera': previews['camera'], 'output': str(settings)})
             run(['node', ROOT / 'bridge.mjs', 'settings', settings_manifest])
-            run([transform, '--gpu', 'cpu', '--viewer-settings', settings, model, delivery / 'index.html'])
+            run([transform, *device, '--viewer-settings', settings, model, delivery / 'index.html'], package_timeout)
             write_json(delivery / 'manifest.json', {'version': 1, 'is3D': True,
                 'engine': 'Nerfstudio 1.1.5 / Splatfacto', 'viewer': 'SuperSplat 1.31.2',
                 'inputImages': len(records), 'registeredImages': registered, 'iterations': iterations,
