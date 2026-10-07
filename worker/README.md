@@ -31,6 +31,17 @@ El proceso corre como UID/GID 10001. El volumen debe permitirle escribir; no amp
 
 `ASTRATOUR_API_URL` debe ser el origen HTTPS canónico (sin ruta ni redirección). `RECONSTRUCTION_WORKER_SECRET` debe coincidir con Vercel. `BLOB_READ_WRITE_TOKEN` da acceso al **almacén dedicado completo**: el worker es un componente de confianza, no se distribuye al navegador.
 
+## Runpod prebuilt image
+
+`ghcr.io/biluses/astratour-worker` (tags `sha-<short>` and the branch name, e.g. `main`) is built by `.github/workflows/worker-image.yml` from `Dockerfile.runpod`: the `runpod-once.sh` stack (CUDA 12.8, torch, COLMAP, Node 22, Nerfstudio 1.1.5 in `/opt/ns`) plus gsplat 1.4.0 kernels compiled ahead of time for sm_86/89/90/120, so jobs skip the ~10 min install and the ~5 min first-run gsplat compile.
+
+- Container start command (keeps Jupyter/SSH/web terminal from `/start.sh`):
+  `bash -c "nohup /opt/astratour/run-once.sh > /workspace/worker.log 2>&1 & exec /start.sh"`
+- `run-once.sh` runs `xvfb-run -a python main.py --once`, then stops the pod on exit; a 90 min wall-clock guard (`WORKER_POD_MAX_SECONDS`) also stops it.
+- Env: `RECONSTRUCTION_WORKER_SECRET={{ RUNPOD_SECRET_astratour_worker_secret }}` and `BLOB_READ_WRITE_TOKEN={{ RUNPOD_SECRET_astratour_blob_token }}`. `ASTRATOUR_API_URL` defaults to production.
+- Container disk: at least 40 GB.
+- Warning: in our test the deploy page "Set overrides" silently did not apply the start command or env. Configure them via pod ⋮ → Edit Pod, then verify in the web terminal with `tr '\0' ' ' < /proc/1/cmdline` and `tr '\0' '\n' < /proc/1/environ | cut -d= -f1` (names only, never print values); `pgrep -af run-once` confirms the worker started.
+
 ## Tubería
 
 1. Reclamar trabajo con lease y token; descargar únicamente las rutas reservadas.

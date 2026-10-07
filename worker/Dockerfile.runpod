@@ -1,0 +1,46 @@
+# Prebuilt Runpod worker image: same stack as runpod-once.sh, installed at build time.
+# Keeps the base CMD (/start.sh: Jupyter, SSH, web terminal). Pod start command:
+#   bash -c "nohup /opt/astratour/run-once.sh > /workspace/worker.log 2>&1 & exec /start.sh"
+FROM runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404 AS runtime
+
+RUN apt-get update -qq \
+    && apt-get install -y -qq colmap libegl1 libgl1 xvfb git curl xz-utils > /dev/null \
+    && rm -rf /var/lib/apt/lists/*
+RUN curl -fsSL https://nodejs.org/dist/v22.22.2/node-v22.22.2-linux-x64.tar.xz | tar -xJ -C /opt
+
+# Venv outside /workspace, which Runpod may mount as a volume.
+ENV PATH=/opt/ns/bin:/opt/node-v22.22.2-linux-x64/bin:$PATH
+RUN python3 -m venv --system-site-packages /opt/ns \
+    && pip install --no-cache-dir -q --ignore-installed blinker nerfstudio==1.1.5 \
+    && pip install --no-cache-dir -q setuptools wheel ninja
+
+# nerfstudio 1.1.5 pins gsplat==1.4.0, whose PyPI wheel JIT-compiles CUDA kernels on first use (~5 min).
+# Rebuild it from source so the ahead-of-time extension gsplat.csrc is imported instead; no GPU needed.
+# 8.6 RTX 3090/A40/A5000/A6000, 8.9 RTX 4090/L4/L40S/6000 Ada, 9.0 H100, 12.0 RTX 5090/PRO 6000.
+ENV TORCH_CUDA_ARCH_LIST="8.6;8.9;9.0;12.0"
+RUN python -c "import torch; print('torch', torch.__version__, 'cuda', torch.version.cuda)" \
+    && nvcc --version | tail -n 2 \
+    && MAX_JOBS=4 pip install --no-cache-dir --no-build-isolation --no-deps --force-reinstall \
+       "gsplat @ git+https://github.com/nerfstudio-project/gsplat.git@v1.4.0" \
+    && python -c "import gsplat.csrc"
+
+WORKDIR /opt/astratour/worker
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev --no-audit --no-fund && npm cache clean --force
+COPY . .
+COPY --chmod=755 run-once.sh /opt/astratour/run-once.sh
+
+# torch >= 2.6 defaults to weights_only loads, which nerfstudio 1.1.5 checkpoints do not support.
+ENV QT_QPA_PLATFORM=offscreen TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1 \
+    WORKER_WORK_DIR=/workspace/work ASTRATOUR_API_URL=https://astratour.vercel.app
+WORKDIR /
+
+# Build-only checks; CI builds this target after pushing `runtime`.
+FROM runtime AS smoke
+RUN set -eux; \
+    python -c "import nerfstudio, gsplat, gsplat.csrc; print('gsplat', gsplat.__version__, gsplat.csrc.__file__)"; \
+    so=$(python -c "import gsplat.csrc; print(gsplat.csrc.__file__)"); \
+    elfs=$(cuobjdump --list-elf "$so"); \
+    for arch in sm_86 sm_89 sm_90 sm_120; do echo "$elfs" | grep -q "$arch"; done; \
+    colmap help > /dev/null; node --version; command -v ns-train xvfb-run runpodctl; \
+    test -x /opt/astratour/run-once.sh; test -d /opt/astratour/worker/node_modules/@vercel/blob
