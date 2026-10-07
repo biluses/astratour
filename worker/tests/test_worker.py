@@ -83,6 +83,15 @@ class WorkerContracts(unittest.TestCase):
             self.assertEqual(struct.unpack('<Q', header)[0], 49)
             self.assertFalse(worker.promote_largest_model(dataset))
 
+    def test_cpu_quota_follows_cgroup_limit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            limit = Path(directory) / 'cpu.max'
+            limit.write_text('1360000 100000\n')
+            self.assertEqual(worker.cpu_quota(limit), 13)
+            limit.write_text('max 100000\n')
+            self.assertEqual(worker.cpu_quota(limit), worker.os.cpu_count() or 1)
+            self.assertEqual(worker.cpu_quota(Path(directory) / 'missing'), worker.os.cpu_count() or 1)
+
     def test_rejects_oversized_image(self):
         value = job()
         value['images'][0]['sizeBytes'] = worker.MAX_FILE + 1
