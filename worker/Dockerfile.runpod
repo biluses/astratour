@@ -4,7 +4,7 @@
 FROM runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404 AS runtime
 
 RUN apt-get update -qq \
-    && apt-get install -y -qq colmap libegl1 libgl1 xvfb git curl xz-utils > /dev/null \
+    && apt-get install -y -qq colmap libegl1 libgl1 libvulkan1 xvfb git curl xz-utils > /dev/null \
     && rm -rf /var/lib/apt/lists/*
 RUN curl -fsSL https://nodejs.org/dist/v22.22.2/node-v22.22.2-linux-x64.tar.xz | tar -xJ -C /opt
 
