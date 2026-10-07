@@ -1,5 +1,6 @@
 import { apiError, HttpError, json, requireSameOrigin, requireUser, rateLimit } from '@/lib/http';
 import { getImages, getOwnedTour, tourView } from '@/lib/tours';
+import { triggerGpuWorker } from '@/lib/gpu-trigger';
 import { enqueueReconstruction, minimumCaptureImages, reconstructionEnabled } from '@/lib/reconstruction';
 
 export const runtime = 'nodejs';
@@ -16,6 +17,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     if (images.length < minimum) throw new HttpError(400, `La reconstrucción necesita al menos ${minimum} fotografías solapadas de la misma escena.`);
     await rateLimit(user.id, 'process-tour', 10);
     await enqueueReconstruction(id, user.id);
+    await triggerGpuWorker(id); // No-op unless Runpod Serverless is configured; never throws.
     return json(await tourView(await getOwnedTour(id, user.id)), 202);
   } catch (error) { return apiError(error); }
 }
