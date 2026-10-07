@@ -146,10 +146,25 @@ class Lease:
         self.thread.join(timeout=35)
 
 
+def cpu_quota(path=Path('/sys/fs/cgroup/cpu.max')):
+    """CPUs the container may use. Pods expose every host core (128) but cap usage via cgroups."""
+    try:
+        quota, period = path.read_text().split()[:2]
+        if quota != 'max':
+            return max(1, int(int(quota) / int(period)))
+    except (OSError, ValueError):
+        pass
+    return os.cpu_count() or 1
+
+
 def run_command(arguments, timeout, lease, work, deadline, max_disk, failure_code='PROCESS_FAILED'):
     """Kill the entire subprocess group on a timeout, expired lease or disk bound."""
     # Child applications do not need the API or Blob credentials (only bridge does).
     environment = dict(os.environ)
+    # Measured on a Runpod RTX 4090 pod (13.6 CPU quota, 128 visible cores): torch spawned 211 threads,
+    # was CPU-throttled and trained at ~60 ms/step with the GPU at ~20 %. Size thread pools to the quota.
+    for key in ('OMP_NUM_THREADS', 'MKL_NUM_THREADS', 'OPENBLAS_NUM_THREADS'):
+        environment.setdefault(key, str(cpu_quota()))
     if Path(str(arguments[1]) if len(arguments) > 1 else '').name != 'bridge.mjs':
         for key in ('RECONSTRUCTION_WORKER_SECRET', 'BLOB_READ_WRITE_TOKEN', 'VERCEL_AUTOMATION_BYPASS_SECRET'):
             environment.pop(key, None)
