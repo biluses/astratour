@@ -8,6 +8,10 @@ export const ANALYSIS_LONG_SIDE_PX = 512; // blur and luminance are measured on 
 // 1 px Gaussian blur p95 = 47. Textureless walls can score low, so this only warns.
 export const BLUR_WARN_THRESHOLD = 60;
 export const DARK_WARN_THRESHOLD = 40; // provisional: mean luminance, 0-255.
+// Uploads are downscaled to this long side. COLMAP SIFT benefits from more detail than the ~1600 px
+// the trainer uses; tune later. Set to Infinity to upload JPEG originals untouched (rollback).
+export const UPLOAD_LONG_SIDE_PX = 2048;
+export const UPLOAD_JPEG_QUALITY = 0.9;
 
 export interface PhotoAnalysis { name: string; width: number; height: number; sha256: string; blur: number; luminance: number }
 export type CaptureAnalysis = PhotoAnalysis | { name: string; unreadable: true };
@@ -86,8 +90,42 @@ export function summarize(results: CaptureAnalysis[], minimum = MIN_CAPTURE_FILE
   return { blocking, warnings };
 }
 
-/** Browser-only: decodes with EXIF orientation applied and measures a 512 px downscaled copy. */
-export async function analyzeFile(file: File): Promise<PhotoAnalysis> {
+/** Deterministic, so every photo from one camera (same oriented size) maps to the same output size. */
+export function uploadSize(width: number, height: number): { width: number; height: number } {
+  const scale = Math.min(1, UPLOAD_LONG_SIDE_PX / Math.max(width, height));
+  return { width: Math.max(1, Math.round(width * scale)), height: Math.max(1, Math.round(height * scale)) };
+}
+
+/** JPEGs already within the upload size pass through byte-for-byte; everything else is re-encoded as JPEG. */
+export function needsReencode(type: string, width: number, height: number): boolean {
+  return type !== 'image/jpeg' || Math.max(width, height) > UPLOAD_LONG_SIDE_PX;
+}
+
+export function uploadName(name: string): string {
+  return `${name.replace(/\.[^.]*$/, '')}.jpg`;
+}
+
+type Canvas2D = OffscreenCanvasRenderingContext2D | CanvasRenderingContext2D;
+function context2d(width: number, height: number): Canvas2D {
+  const context = typeof OffscreenCanvas !== 'undefined'
+    ? new OffscreenCanvas(width, height).getContext('2d')
+    : Object.assign(document.createElement('canvas'), { width, height }).getContext('2d');
+  if (!context) throw new Error('Canvas 2D unavailable');
+  context.imageSmoothingQuality = 'high';
+  return context;
+}
+
+function toJpeg(canvas: OffscreenCanvas | HTMLCanvasElement): Promise<Blob> {
+  const options = { type: 'image/jpeg', quality: UPLOAD_JPEG_QUALITY };
+  if ('convertToBlob' in canvas) return canvas.convertToBlob(options);
+  return new Promise((resolve, reject) => canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error('JPEG encode failed')), options.type, options.quality));
+}
+
+/**
+ * Browser-only: decodes once with EXIF orientation applied, measures a 512 px downscaled copy and
+ * prepares the file to upload. Analysis always describes the original (dimensions, SHA-256).
+ */
+export async function analyzeFile(file: File): Promise<{ analysis: PhotoAnalysis; upload: File }> {
   const [bitmap, digest] = await Promise.all([
     createImageBitmap(file, { imageOrientation: 'from-image' }),
     file.arrayBuffer().then(buffer => crypto.subtle.digest('SHA-256', buffer)),
@@ -97,16 +135,18 @@ export async function analyzeFile(file: File): Promise<PhotoAnalysis> {
     const scale = Math.min(1, ANALYSIS_LONG_SIDE_PX / Math.max(width, height));
     const w = Math.max(1, Math.round(width * scale));
     const h = Math.max(1, Math.round(height * scale));
-    const context = typeof OffscreenCanvas !== 'undefined'
-      ? new OffscreenCanvas(w, h).getContext('2d')
-      : Object.assign(document.createElement('canvas'), { width: w, height: h }).getContext('2d');
-    if (!context) throw new Error('Canvas 2D unavailable');
-    context.imageSmoothingQuality = 'high';
+    const context = context2d(w, h);
     context.drawImage(bitmap, 0, 0, w, h);
     const rgba = context.getImageData(0, 0, w, h).data;
     const gray = new Float32Array(w * h);
     for (let i = 0; i < gray.length; i++) gray[i] = 0.299 * rgba[i * 4] + 0.587 * rgba[i * 4 + 1] + 0.114 * rgba[i * 4 + 2];
     const sha256 = Array.from(new Uint8Array(digest), b => b.toString(16).padStart(2, '0')).join('');
-    return { name: file.name, width, height, sha256, blur: blurScore(gray, w, h), luminance: meanLuminance(gray) };
+    const analysis = { name: file.name, width, height, sha256, blur: blurScore(gray, w, h), luminance: meanLuminance(gray) };
+    if (!needsReencode(file.type, width, height)) return { analysis, upload: file };
+    const target = uploadSize(width, height);
+    const output = context2d(target.width, target.height);
+    output.drawImage(bitmap, 0, 0, target.width, target.height);
+    const blob = await toJpeg(output.canvas);
+    return { analysis, upload: new File([blob], uploadName(file.name), { type: 'image/jpeg', lastModified: file.lastModified }) };
   } finally { bitmap.close(); }
 }

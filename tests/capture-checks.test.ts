@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { blurScore, checkDimensions, DARK_WARN_THRESHOLD, findDuplicates, listNames, meanLuminance, summarize,
-  type PhotoAnalysis } from '@/lib/capture-checks';
+import { blurScore, checkDimensions, DARK_WARN_THRESHOLD, findDuplicates, listNames, meanLuminance, needsReencode, summarize,
+  UPLOAD_LONG_SIDE_PX, uploadName, uploadSize, type PhotoAnalysis } from '@/lib/capture-checks';
 import { MIN_CAPTURE_FILES, RECOMMENDED_CAPTURE_FILES } from '@/lib/contracts';
 
 const photo = (name: string, over: Partial<PhotoAnalysis> = {}): PhotoAnalysis =>
@@ -89,5 +89,26 @@ describe('Capture checks', () => {
     expect(result.blocking).toEqual([]);
     expect(result.warnings[0]).toContain('broken.png');
     expect(listNames(['a', 'b', 'c', 'd', 'e'])).toBe('a, b, c y 2 más');
+  });
+});
+
+describe('upload downscale', () => {
+  it('fits the long side to the upload size, preserving aspect and orientation', () => {
+    expect(UPLOAD_LONG_SIDE_PX).toBe(2048);
+    expect(uploadSize(4032, 3024)).toEqual({ width: 2048, height: 1536 });
+    expect(uploadSize(3024, 4032)).toEqual({ width: 1536, height: 2048 });
+    expect(uploadSize(4032, 2268)).toEqual({ width: 2048, height: 1152 });
+    expect(uploadSize(1920, 1080)).toEqual({ width: 1920, height: 1080 });
+  });
+  it('passes small JPEGs through and re-encodes large or PNG files', () => {
+    expect(needsReencode('image/jpeg', 2048, 1536)).toBe(false);
+    expect(needsReencode('image/jpeg', 1600, 1200)).toBe(false);
+    expect(needsReencode('image/jpeg', 4032, 3024)).toBe(true);
+    expect(needsReencode('image/png', 1600, 1200)).toBe(true);
+  });
+  it('keeps the base name with a .jpg extension', () => {
+    expect(uploadName('IMG_0001.HEIC.jpeg')).toBe('IMG_0001.HEIC.jpg');
+    expect(uploadName('salon.png')).toBe('salon.jpg');
+    expect(uploadName('foto')).toBe('foto.jpg');
   });
 });

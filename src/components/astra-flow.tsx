@@ -86,6 +86,7 @@ export function AstraFlow({ user, initialTour, initialError, accessReady, paymen
   const [files, setFiles] = useState<File[]>([]);
   const [thumbnails, setThumbnails] = useState<string[]>([]);
   const [analyses] = useState(() => new WeakMap<File, CaptureAnalysis>());
+  const [prepared] = useState(() => new WeakMap<File, File>()); // original -> downscaled JPEG (or itself)
   const checks = useMemo(() => summarize(files.flatMap(f => analyses.get(f) ?? []), minimumImages), [files, analyses, minimumImages]);
   const [title, setTitle] = useState('');
   const [error, setError] = useState(initialError);
@@ -161,7 +162,10 @@ export function AstraFlow({ user, initialTour, initialError, accessReady, paymen
       // ponytail: sequential decode bounds memory with hundreds of 12-48 MP photos; add a small pool if it proves slow.
       for (const [index, file] of incoming.entries()) {
         if (!analyses.has(file)) {
-          try { analyses.set(file, await analyzeFile(file)); } catch { analyses.set(file, { name: file.name, unreadable: true }); }
+          try {
+            const { analysis, upload } = await analyzeFile(file);
+            analyses.set(file, analysis); prepared.set(file, upload);
+          } catch { analyses.set(file, { name: file.name, unreadable: true }); }
         }
         setProgress((index + 1) / incoming.length * 100);
       }
@@ -184,9 +188,11 @@ export function AstraFlow({ user, initialTour, initialError, accessReady, paymen
     try {
       if (files.length) {
         setBusy('upload'); setProgress(0);
+        // All-or-nothing: one unprepared photo would mix original and downscaled sizes from one camera.
+        const bodies = files.every(f => prepared.has(f)) ? files.map(f => prepared.get(f)!) : files;
         if (!job.current) {
           const created = await api<Omit<Job, 'completed'>>('/api/tours', { method: 'POST', body: JSON.stringify({
-            title: title.trim() || 'Mi propiedad', files: files.map(f => ({ name: f.name, size: f.size, type: f.type })),
+            title: title.trim() || 'Mi propiedad', files: bodies.map(f => ({ name: f.name, size: f.size, type: f.type })),
           }) });
           job.current = { ...created, completed: new Set() };
           setTour({ id: created.tourId, title: title.trim() || 'Mi propiedad', status: 'borrador', simulated: false, images: [], modelUrl: null });
@@ -197,7 +203,7 @@ export function AstraFlow({ user, initialTour, initialError, accessReady, paymen
         for (const [index, descriptor] of currentJob.uploads.entries()) {
           if (currentJob.completed.has(descriptor.imageId)) continue;
           try {
-            await upload(descriptor.pathname, files[index], {
+            await upload(descriptor.pathname, bodies[index], {
               access: 'private', handleUploadUrl: '/api/upload',
               clientPayload: JSON.stringify({ tourId: currentJob.tourId, imageId: descriptor.imageId }),
               onUploadProgress: ({ percentage }) => setProgress((index + percentage / 100) / files.length * 100),
