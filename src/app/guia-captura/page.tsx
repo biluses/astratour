@@ -148,7 +148,7 @@ export default function CaptureGuidePage() {
         <Section title="Cámara">
           <ul className="list-disc space-y-1 pl-5">
             <li>Usa siempre la misma cámara y la misma lente del móvil, sin zoom.</li>
-            <li>No mezcles fotos verticales y horizontales.</li>
+            <li>No mezcles fotos verticales y horizontales. Activa el bloqueo de rotación del móvil: si lo giras sin querer, la foto cambia de orientación.</li>
             <li>Dispara a la resolución máxima (al menos {MIN_SHORT_SIDE_PX} px en el lado corto).</li>
             <li>Formato JPG o PNG, {MAX_MB} MB como máximo por foto, sin recortes ni retoques.</li>
           </ul>

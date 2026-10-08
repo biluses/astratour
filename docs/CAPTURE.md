@@ -12,7 +12,7 @@
 
 `src/lib/capture-checks.ts` analiza cada foto (orientación EXIF aplicada, copia reducida a 512 px de lado largo):
 
-- **Bloquean:** más de un tamaño/orientación en la captura (el worker asume una sola cámara), lado corto < 720 px, archivos duplicados (SHA-256).
+- **Bloquean:** más de un tamaño/orientación en la captura (el worker asume una sola cámara), lado corto < 720 px, archivos duplicados (SHA-256). Las fotos causantes se marcan en rojo en las miniaturas y un botón las quita de una vez (se conserva la orientación mayoritaria y la primera copia).
 - **Avisan:** fotos que el navegador no puede analizar, lado corto < 1080 px, varianza del laplaciano < 60 (posible desenfoque; calibrado, ver Evidencia), luminancia media < 40/255 (una foto oscura no se marca además como desenfocada), menos de 60 fotos (recomendado).
 - Iluminación consistente, imágenes nítidas y escena estática. Evitar basar la captura en espejos y reflejos.
 
@@ -87,3 +87,10 @@ Cámaras registradas y error frente a las poses de referencia (mediana de giro; 
 **Pipeline de producción en GPU (RTX 4090, playroom, 60 fotos):** COLMAP 3.9.1 (CPU) 6,5 min (extracción 20 s, emparejamiento exhaustivo 5,5 min); 49/60 cámaras en el mayor modelo; splatfacto 30.000 iteraciones 19 min (incluye ~5 min de compilación JIT de gsplat en el primer uso); evaluación en vistas reservadas PSNR 25,5 dB, SSIM 0,83, LPIPS 0,28; exportación 510.809 gaussianas (127 MB PLY). Coste de GPU ≈ 0,3 USD por estancia a 0,74 USD/h. Con COLMAP con CUDA y gsplat precompilado en la imagen, el tiempo baja.
 
 **Corrección del worker:** COLMAP puede dividir una captura en varios modelos y `ns-process-data` 1.1.5 convierte siempre `sparse/0`. Con 60 fotos de una estancia, `sparse/0` tenía 2 cámaras y `sparse/1`, 49. El worker ahora promueve el modelo con más cámaras antes de comprobar el registro.
+
+### Captura real de móvil en el navegador (08/10/2026)
+
+Prueba en Chromium con 41 fotos de iPhone 7 (12 MP, exterior; dataset público `alicevision/dataset_monstree`), sesión local y reconstrucción deshabilitada:
+
+- 5 de 41 fotos salieron en horizontal y el resto en vertical: la captura queda bloqueada, igual que la rechazaría el worker (`worker/images.py`). Análisis de las 41 fotos en 12 s.
+- Límite del aviso de desenfoque con 12 MP: varianza del laplaciano a 512 px de 3.279 (original), 1.279 (desenfoque gaussiano de 4 px a resolución completa), 231 (8 px) y 58 (12 px). Solo avisa a partir de ~12 px, aunque el worker trabaja a 2048 px. Pendiente: medir a más resolución y recalibrar con capturas de móvil.

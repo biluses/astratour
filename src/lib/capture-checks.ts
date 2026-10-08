@@ -12,6 +12,8 @@ export const DARK_WARN_THRESHOLD = 40; // provisional: mean luminance, 0-255.
 export interface PhotoAnalysis { name: string; width: number; height: number; sha256: string; blur: number; luminance: number }
 export type CaptureAnalysis = PhotoAnalysis | { name: string; unreadable: true };
 export interface CaptureSummary { blocking: string[]; warnings: string[] }
+/** `flagged`: indices (into the analysed list) of the photos that cause a per-photo blocking issue. */
+export type CaptureChecks = CaptureSummary & { flagged: number[] };
 
 const MAX_LISTED = 3;
 export function listNames(names: string[]): string {
@@ -68,14 +70,16 @@ export function meanLuminance(gray: ArrayLike<number>): number {
   return gray.length ? sum / gray.length : 0;
 }
 
-export function summarize(results: CaptureAnalysis[], minimum = MIN_CAPTURE_FILES): CaptureSummary {
+export function summarize(results: CaptureAnalysis[], minimum = MIN_CAPTURE_FILES): CaptureChecks {
   const photos = results.filter((r): r is PhotoAnalysis => !('unreadable' in r));
   const unreadable = results.filter(r => 'unreadable' in r).map(r => r.name);
   const { blocking, warnings } = checkDimensions(photos);
   // Warn only: a browser that cannot decode or measure a photo must not block an otherwise valid capture.
   if (unreadable.length) warnings.unshift(`No se han podido comprobar estas fotos en tu navegador: ${listNames(unreadable)}. Asegúrate de que son JPG o PNG originales.`);
   const duplicates = findDuplicates(photos);
-  if (duplicates.length) blocking.push(`Hay fotos duplicadas (mismo archivo): ${listNames(duplicates.map(group => group.join(' = ')))}. Quita las copias.`);
+  // The same file picked twice shares its name; "a.jpg = a.jpg" reads as a bug.
+  const describe = (group: string[]) => new Set(group).size === 1 ? `${group[0]} (seleccionada ${group.length} veces)` : group.join(' = ');
+  if (duplicates.length) blocking.push(`Hay fotos duplicadas (mismo archivo): ${listNames(duplicates.map(describe))}. Quita las copias.`);
   if (results.length && results.length < minimum) blocking.unshift(`Tienes ${results.length} fotos; faltan ${minimum - results.length} para el mínimo de ${minimum}. Añade fotos de la misma estancia siguiendo la guía.`);
   if (results.length >= minimum && results.length < RECOMMENDED_CAPTURE_FILES) warnings.push(`Tienes ${results.length} fotos. Con menos de ${RECOMMENDED_CAPTURE_FILES} por estancia la reconstrucción puede fallar; si puedes, añade más siguiendo la guía.`);
   // Dark photos also score low on blur; report them once, as dark.
@@ -83,7 +87,23 @@ export function summarize(results: CaptureAnalysis[], minimum = MIN_CAPTURE_FILE
   if (blurry.length) warnings.push(`Posiblemente movidas o desenfocadas: ${listNames(blurry)}. Repítelas con el móvil estable.`);
   const dark = photos.filter(p => p.luminance < DARK_WARN_THRESHOLD).map(p => p.name);
   if (dark.length) warnings.push(`Muy oscuras: ${listNames(dark)}. Añade luz o repítelas con iluminación constante.`);
-  return { blocking, warnings };
+  return { blocking, warnings, flagged: flagBlockingPhotos(results) };
+}
+
+/** Same rules as checkDimensions/findDuplicates, by index: odd-size photos (minority sizes), too small, and repeat copies. */
+export function flagBlockingPhotos(results: CaptureAnalysis[]): number[] {
+  const sizes = new Map<string, number>();
+  for (const r of results) if (!('unreadable' in r)) sizes.set(`${r.width}×${r.height}`, (sizes.get(`${r.width}×${r.height}`) ?? 0) + 1);
+  const majority = [...sizes.entries()].sort((a, b) => b[1] - a[1])[0]?.[0];
+  const seen = new Set<string>();
+  const flagged: number[] = [];
+  results.forEach((r, i) => {
+    if ('unreadable' in r) return;
+    const repeated = seen.has(r.sha256);
+    seen.add(r.sha256);
+    if (repeated || `${r.width}×${r.height}` !== majority || Math.min(r.width, r.height) < MIN_SHORT_SIDE_PX) flagged.push(i);
+  });
+  return flagged;
 }
 
 /** Browser-only: decodes with EXIF orientation applied and measures a 512 px downscaled copy. */
