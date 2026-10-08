@@ -14,6 +14,9 @@ WORKER_DIR = Path(os.environ.get('ASTRATOUR_WORKER_DIR', Path(__file__).resolve(
 # Must stay below the Runpod execution timeout (90 min) so cleanup runs before the hard kill.
 CYCLE_SECONDS = int(os.environ.get('WORKER_CYCLE_SECONDS', 85 * 60))
 GRACE_SECONDS = 60
+# main.py must give up first: a clean PROCESS_TIMEOUT fails the tour at once, while a hard kill at the
+# cycle limit leaves the lease to expire and the job to be retried (up to 3x) by the daily cron.
+JOB_MARGIN_SECONDS = 5 * 60
 
 
 def command():
@@ -29,6 +32,8 @@ def handler(job):
     env.setdefault('WORKER_ID', f"runpod-{os.environ.get('RUNPOD_POD_ID', 'serverless')}"[:100])
     env.setdefault('QT_QPA_PLATFORM', 'offscreen')
     env.setdefault('TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD', '1')
+    job_limit = max(60, CYCLE_SECONDS - JOB_MARGIN_SECONDS)
+    env['WORKER_JOB_TIMEOUT_SECONDS'] = str(min(int(env.get('WORKER_JOB_TIMEOUT_SECONDS') or job_limit), job_limit))
     # stdout/stderr go to Runpod logs; main.py never prints secrets. Nothing is returned from them.
     process = subprocess.Popen(command(), cwd=WORKER_DIR, env=env, start_new_session=True)
     try:

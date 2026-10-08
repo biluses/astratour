@@ -26,6 +26,17 @@ class ServerlessHandler(unittest.TestCase):
         self.assertNotIn('../../evil', ' '.join(args))
         self.assertTrue(popen.call_args.kwargs['start_new_session'])
 
+    def test_job_timeout_stays_below_the_cycle(self):
+        limit = str(handler.CYCLE_SECONDS - handler.JOB_MARGIN_SECONDS)
+        _, popen, _ = self.run_with([0])
+        self.assertEqual(popen.call_args.kwargs['env']['WORKER_JOB_TIMEOUT_SECONDS'], limit)
+        with patch.dict(handler.os.environ, {'WORKER_JOB_TIMEOUT_SECONDS': '14400'}):
+            _, popen, _ = self.run_with([0])
+        self.assertEqual(popen.call_args.kwargs['env']['WORKER_JOB_TIMEOUT_SECONDS'], limit)
+        with patch.dict(handler.os.environ, {'WORKER_JOB_TIMEOUT_SECONDS': '600'}):
+            _, popen, _ = self.run_with([0])
+        self.assertEqual(popen.call_args.kwargs['env']['WORKER_JOB_TIMEOUT_SECONDS'], '600')
+
     def test_failure_exit_code(self):
         result, _, _ = self.run_with([1])
         self.assertEqual(result, {'status': 'failed', 'exitCode': 1})

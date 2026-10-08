@@ -5,7 +5,7 @@ Goal: reconstruction starts automatically when a user clicks "Generar", and the 
 ## How it works
 
 1. The web app enqueues the job in Postgres (unchanged).
-2. If `RUNPOD_ENDPOINT_ID` and `RUNPOD_API_KEY` are set in Vercel, the app also sends `POST https://api.runpod.ai/v2/{endpoint}/run` (`src/lib/gpu-trigger.ts`). The request has a 3 s timeout. Errors are logged without secrets and never fail the user request.
+2. If `RUNPOD_ENDPOINT_ID` and `RUNPOD_API_KEY` are set in Vercel, the app also sends `POST https://api.runpod.ai/v2/{endpoint}/run` (`src/lib/gpu-trigger.ts`). It runs after the response is sent, with a 3 s timeout and one retry on network errors, 429 or 5xx. It sends no job data. Errors are logged without secrets and never fail the user request.
 3. Runpod starts a worker. `worker/serverless_handler.py` runs `main.py --once` (under `xvfb-run` when available). That command claims at most one job through the authenticated `/api/internal/reconstruction/claim` endpoint, processes it and exits.
 4. Once the worker has been idle past the idle timeout, Runpod scales it back to zero.
 
@@ -53,7 +53,7 @@ With both variables unset, behaviour is exactly as before.
 
     The handler defaults `QT_QPA_PLATFORM=offscreen` and `TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1`, which nerfstudio 1.1.5 needs with torch ≥ 2.6.
 
-    Optional: `WORKER_CYCLE_SECONDS` (default 5100). It must stay below the execution timeout so the worker shuts down cleanly first.
+    Optional: `WORKER_CYCLE_SECONDS` (default 5100). It must stay below the execution timeout so the worker shuts down cleanly first. The handler caps `WORKER_JOB_TIMEOUT_SECONDS` at the cycle minus 5 min, so an overlong job fails at once with `PROCESS_TIMEOUT` instead of being killed and retried by the daily cron.
 11. Deploy. Copy the **Endpoint ID** shown on the endpoint page.
 
 **Test it without the web app:**
