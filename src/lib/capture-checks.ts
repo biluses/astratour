@@ -3,13 +3,14 @@ import { MIN_CAPTURE_FILES, RECOMMENDED_CAPTURE_FILES } from '@/lib/contracts';
 
 export const MIN_SHORT_SIDE_PX = 720; // provisional: blocks captures too small for reliable feature matching.
 export const RECOMMENDED_SHORT_SIDE_PX = 1080; // provisional
-export const ANALYSIS_LONG_SIDE_PX = 512; // blur and luminance are measured on images downscaled to this long side.
-// Laplacian variance at 512 px long side. Calibrated on 52 real indoor photos: sharp p5 = 88,
-// 1 px Gaussian blur p95 = 47. Textureless walls can score low, so this only warns.
-export const BLUR_WARN_THRESHOLD = 60;
+export const ANALYSIS_LONG_SIDE_PX = 512; // luminance and the coarse half of the sharpness ratio use this long side.
+export const DETAIL_LONG_SIDE_PX = 1024; // fine half of the sharpness ratio (never upscaled).
+// Sharpness = Laplacian variance at 1024 px / at 512 px. Absolute variance varies ~20x between scenes
+// (bark vs. an object on a table), the ratio does not: blur removes fine detail first. See docs/CAPTURE.md.
+export const BLUR_WARN_THRESHOLD = 0.2;
 export const DARK_WARN_THRESHOLD = 40; // provisional: mean luminance, 0-255.
 
-export interface PhotoAnalysis { name: string; width: number; height: number; sha256: string; blur: number; luminance: number }
+export interface PhotoAnalysis { name: string; width: number; height: number; sha256: string; sharpness: number; luminance: number }
 export type CaptureAnalysis = PhotoAnalysis | { name: string; unreadable: true };
 export interface CaptureSummary { blocking: string[]; warnings: string[] }
 /** `flagged`: indices (into the analysed list) of the photos that cause a per-photo blocking issue. */
@@ -49,6 +50,11 @@ export function findDuplicates(photos: Pick<PhotoAnalysis, 'name' | 'sha256'>[])
   return [...byHash.values()].filter(names => names.length > 1);
 }
 
+/** Fine-to-coarse detail ratio. A flat image has no detail to judge: report it as sharp, never as blurry. */
+export function sharpnessRatio(fine: number, coarse: number): number {
+  return coarse > 0 ? fine / coarse : 1;
+}
+
 /** Variance of the 4-neighbour Laplacian over interior pixels. Higher means sharper. */
 export function blurScore(gray: ArrayLike<number>, width: number, height: number): number {
   if (width < 3 || height < 3) return 0;
@@ -82,8 +88,8 @@ export function summarize(results: CaptureAnalysis[], minimum = MIN_CAPTURE_FILE
   if (duplicates.length) blocking.push(`Hay fotos duplicadas (mismo archivo): ${listNames(duplicates.map(describe))}. Quita las copias.`);
   if (results.length && results.length < minimum) blocking.unshift(`Tienes ${results.length} fotos; faltan ${minimum - results.length} para el mínimo de ${minimum}. Añade fotos de la misma estancia siguiendo la guía.`);
   if (results.length >= minimum && results.length < RECOMMENDED_CAPTURE_FILES) warnings.push(`Tienes ${results.length} fotos. Con menos de ${RECOMMENDED_CAPTURE_FILES} por estancia la reconstrucción puede fallar; si puedes, añade más siguiendo la guía.`);
-  // Dark photos also score low on blur; report them once, as dark.
-  const blurry = photos.filter(p => p.blur < BLUR_WARN_THRESHOLD && p.luminance >= DARK_WARN_THRESHOLD).map(p => p.name);
+  // Report a dark photo once, as dark: noise and underexposure make its sharpness unreliable.
+  const blurry = photos.filter(p => p.sharpness < BLUR_WARN_THRESHOLD && p.luminance >= DARK_WARN_THRESHOLD).map(p => p.name);
   if (blurry.length) warnings.push(`Posiblemente movidas o desenfocadas: ${listNames(blurry)}. Repítelas con el móvil estable.`);
   const dark = photos.filter(p => p.luminance < DARK_WARN_THRESHOLD).map(p => p.name);
   if (dark.length) warnings.push(`Muy oscuras: ${listNames(dark)}. Añade luz o repítelas con iluminación constante.`);
@@ -106,27 +112,35 @@ export function flagBlockingPhotos(results: CaptureAnalysis[]): number[] {
   return flagged;
 }
 
-/** Browser-only: decodes with EXIF orientation applied and measures a 512 px downscaled copy. */
+/** Draws the bitmap with its long side at `longSide` px (never upscaled) and returns luma. */
+function grayAt(bitmap: ImageBitmap, longSide: number) {
+  const scale = Math.min(1, longSide / Math.max(bitmap.width, bitmap.height));
+  const w = Math.max(1, Math.round(bitmap.width * scale));
+  const h = Math.max(1, Math.round(bitmap.height * scale));
+  const context = typeof OffscreenCanvas !== 'undefined'
+    ? new OffscreenCanvas(w, h).getContext('2d')
+    : Object.assign(document.createElement('canvas'), { width: w, height: h }).getContext('2d');
+  if (!context) throw new Error('Canvas 2D unavailable');
+  context.imageSmoothingQuality = 'high';
+  context.drawImage(bitmap, 0, 0, w, h);
+  const rgba = context.getImageData(0, 0, w, h).data;
+  const gray = new Float32Array(w * h);
+  for (let i = 0; i < gray.length; i++) gray[i] = 0.299 * rgba[i * 4] + 0.587 * rgba[i * 4 + 1] + 0.114 * rgba[i * 4 + 2];
+  return { gray, w, h };
+}
+
+/** Browser-only: decodes with EXIF orientation applied and measures 1024 px and 512 px downscaled copies. */
 export async function analyzeFile(file: File): Promise<PhotoAnalysis> {
   const [bitmap, digest] = await Promise.all([
     createImageBitmap(file, { imageOrientation: 'from-image' }),
     file.arrayBuffer().then(buffer => crypto.subtle.digest('SHA-256', buffer)),
   ]);
   try {
-    const { width, height } = bitmap;
-    const scale = Math.min(1, ANALYSIS_LONG_SIDE_PX / Math.max(width, height));
-    const w = Math.max(1, Math.round(width * scale));
-    const h = Math.max(1, Math.round(height * scale));
-    const context = typeof OffscreenCanvas !== 'undefined'
-      ? new OffscreenCanvas(w, h).getContext('2d')
-      : Object.assign(document.createElement('canvas'), { width: w, height: h }).getContext('2d');
-    if (!context) throw new Error('Canvas 2D unavailable');
-    context.imageSmoothingQuality = 'high';
-    context.drawImage(bitmap, 0, 0, w, h);
-    const rgba = context.getImageData(0, 0, w, h).data;
-    const gray = new Float32Array(w * h);
-    for (let i = 0; i < gray.length; i++) gray[i] = 0.299 * rgba[i * 4] + 0.587 * rgba[i * 4 + 1] + 0.114 * rgba[i * 4 + 2];
+    const fine = grayAt(bitmap, DETAIL_LONG_SIDE_PX);
+    const coarse = grayAt(bitmap, ANALYSIS_LONG_SIDE_PX);
     const sha256 = Array.from(new Uint8Array(digest), b => b.toString(16).padStart(2, '0')).join('');
-    return { name: file.name, width, height, sha256, blur: blurScore(gray, w, h), luminance: meanLuminance(gray) };
+    return { name: file.name, width: bitmap.width, height: bitmap.height, sha256,
+      sharpness: sharpnessRatio(blurScore(fine.gray, fine.w, fine.h), blurScore(coarse.gray, coarse.w, coarse.h)),
+      luminance: meanLuminance(coarse.gray) };
   } finally { bitmap.close(); }
 }
