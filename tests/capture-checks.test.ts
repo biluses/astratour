@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { blurScore, checkDimensions, DARK_WARN_THRESHOLD, findDuplicates, listNames, meanLuminance, summarize,
+import { blurScore, checkDimensions, DARK_WARN_THRESHOLD, findDuplicates, flagBlockingPhotos, listNames, meanLuminance, summarize,
   type PhotoAnalysis } from '@/lib/capture-checks';
 import { MIN_CAPTURE_FILES, RECOMMENDED_CAPTURE_FILES } from '@/lib/contracts';
 
@@ -48,6 +48,20 @@ describe('Capture checks', () => {
   it('groups byte-identical duplicates', () => {
     expect(findDuplicates([photo('a.jpg', { sha256: 'x' }), photo('b.jpg', { sha256: 'x' }), photo('c.jpg')])).toEqual([['a.jpg', 'b.jpg']]);
     expect(summarize([photo('a.jpg', { sha256: 'x' }), photo('b.jpg', { sha256: 'x' })], 1).blocking[0]).toContain('a.jpg = b.jpg');
+  });
+
+  it('names a file picked twice once, not as "a.jpg = a.jpg"', () => {
+    const message = summarize([photo('a.jpg', { sha256: 'x' }), photo('a.jpg', { sha256: 'x' })], 1).blocking[0];
+    expect(message).toContain('a.jpg (seleccionada 2 veces)');
+    expect(message).not.toContain('a.jpg = a.jpg');
+  });
+
+  it('flags by index the photos that block: minority size, too small, repeat copies; keeps unreadable', () => {
+    const results = [photo('a.jpg'), photo('v.jpg', { width: 3024, height: 4032, sha256: 'v' }), photo('b.jpg', { sha256: 'b' }),
+      photo('a-copy.jpg', { sha256: 'a.jpg' }), { name: 'broken.png', unreadable: true as const }, photo('c.jpg', { sha256: 'c' })];
+    expect(flagBlockingPhotos(results)).toEqual([1, 3]);
+    expect(flagBlockingPhotos([photo('a.jpg'), photo('t.jpg', { width: 700, height: 500, sha256: 't' }), photo('b.jpg', { sha256: 'b' })])).toEqual([1]);
+    expect(summarize([photo('a.jpg'), photo('b.jpg', { sha256: 'b' })], 1).flagged).toEqual([]);
   });
 
   it('scores a sharp checkerboard above a blurred copy and a constant image', () => {
