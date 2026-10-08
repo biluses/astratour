@@ -157,6 +157,11 @@ def cpu_quota(path=Path('/sys/fs/cgroup/cpu.max')):
     return os.cpu_count() or 1
 
 
+def cpu_fallback_allowed(error, deadline):
+    """Retry SOG on CPU only when the GPU encoder itself failed or hung, never on lease, disk or job deadline errors."""
+    return error.code in ('SOG_GPU_FAILED', 'PROCESS_TIMEOUT') and time.monotonic() < deadline
+
+
 def run_command(arguments, timeout, lease, work, deadline, max_disk, failure_code='PROCESS_FAILED'):
     """Kill the entire subprocess group on a timeout, expired lease or disk bound."""
     # Child applications do not need the API or Blob credentials (only bridge does).
@@ -304,8 +309,10 @@ def execute_job(api, job):
             package_timeout = bounded_int('WORKER_PACKAGE_TIMEOUT_SECONDS', 5400, 60, 10800)
             device = ['--gpu', '0']
             try:
-                run([transform, *device, ply, '--filter-nan', '--rotate', '-90,0,0', model], 900)
-            except JobError:
+                run([transform, *device, ply, '--filter-nan', '--rotate', '-90,0,0', model], 900, 'SOG_GPU_FAILED')
+            except JobError as error:
+                if not cpu_fallback_allowed(error, deadline):
+                    raise
                 model.unlink(missing_ok=True)
                 device = ['--gpu', 'cpu', '--max-workers', str(cpu_quota())]
                 run([transform, *device, ply, '--filter-nan', '--rotate', '-90,0,0', model], package_timeout)

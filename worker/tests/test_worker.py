@@ -92,6 +92,15 @@ class WorkerContracts(unittest.TestCase):
             self.assertEqual(worker.cpu_quota(limit), worker.os.cpu_count() or 1)
             self.assertEqual(worker.cpu_quota(Path(directory) / 'missing'), worker.os.cpu_count() or 1)
 
+    def test_sog_falls_back_to_cpu_only_for_gpu_encoder_failures(self):
+        later = worker.time.monotonic() + 600
+        self.assertTrue(worker.cpu_fallback_allowed(worker.JobError('SOG_GPU_FAILED'), later))
+        self.assertTrue(worker.cpu_fallback_allowed(worker.JobError('PROCESS_TIMEOUT'), later))
+        for code in ('LEASE_LOST', 'DISK_LIMIT', 'PROCESS_FAILED'):
+            self.assertFalse(worker.cpu_fallback_allowed(worker.JobError(code), later))
+        # A timeout caused by the job deadline is final, not a slow GPU.
+        self.assertFalse(worker.cpu_fallback_allowed(worker.JobError('PROCESS_TIMEOUT'), worker.time.monotonic() - 1))
+
     def test_rejects_oversized_image(self):
         value = job()
         value['images'][0]['sizeBytes'] = worker.MAX_FILE + 1
