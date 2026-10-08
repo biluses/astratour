@@ -3,10 +3,9 @@ import { MIN_CAPTURE_FILES, RECOMMENDED_CAPTURE_FILES } from '@/lib/contracts';
 
 export const MIN_SHORT_SIDE_PX = 720; // provisional: blocks captures too small for reliable feature matching.
 export const RECOMMENDED_SHORT_SIDE_PX = 1080; // provisional
-export const ANALYSIS_LONG_SIDE_PX = 512; // luminance and the coarse half of the sharpness ratio use this long side.
-export const DETAIL_LONG_SIDE_PX = 1024; // fine half of the sharpness ratio (never upscaled).
-// Sharpness = Laplacian variance at 1024 px / at 512 px. Absolute variance varies ~20x between scenes
-// (bark vs. an object on a table), the ratio does not: blur removes fine detail first. See docs/CAPTURE.md.
+export const ANALYSIS_LONG_SIDE_PX = 1024; // photos are measured on a copy downscaled to this long side (never upscaled).
+// Sharpness = Laplacian variance of that copy / of its 2x2-averaged half. Absolute variance varies ~20x between
+// scenes (bark vs. an object on a table), the ratio does not: blur removes fine detail first. See docs/CAPTURE.md.
 export const BLUR_WARN_THRESHOLD = 0.2;
 export const DARK_WARN_THRESHOLD = 40; // provisional: mean luminance, 0-255.
 
@@ -50,9 +49,22 @@ export function findDuplicates(photos: Pick<PhotoAnalysis, 'name' | 'sha256'>[])
   return [...byHash.values()].filter(names => names.length > 1);
 }
 
-/** Fine-to-coarse detail ratio. A flat image has no detail to judge: report it as sharp, never as blurry. */
-export function sharpnessRatio(fine: number, coarse: number): number {
-  return coarse > 0 ? fine / coarse : 1;
+/** 2x2 box average: an exact half-size copy, independent of the browser's resampling filter. */
+export function halve(gray: ArrayLike<number>, width: number, height: number) {
+  const w = width >> 1, h = height >> 1;
+  const out = new Float32Array(w * h);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    const i = 2 * y * width + 2 * x;
+    out[y * w + x] = (gray[i] + gray[i + 1] + gray[i + width] + gray[i + width + 1]) / 4;
+  }
+  return { gray: out, w, h };
+}
+
+/** Fine-to-coarse detail ratio. An image with no detail at all cannot be judged: report it as sharp. */
+export function sharpness(gray: ArrayLike<number>, width: number, height: number): number {
+  const coarse = halve(gray, width, height);
+  const coarseScore = blurScore(coarse.gray, coarse.w, coarse.h);
+  return coarseScore > 0 ? blurScore(gray, width, height) / coarseScore : 1;
 }
 
 /** Variance of the 4-neighbour Laplacian over interior pixels. Higher means sharper. */
@@ -129,18 +141,16 @@ function grayAt(bitmap: ImageBitmap, longSide: number) {
   return { gray, w, h };
 }
 
-/** Browser-only: decodes with EXIF orientation applied and measures 1024 px and 512 px downscaled copies. */
+/** Browser-only: decodes with EXIF orientation applied and measures a 1024 px downscaled copy. */
 export async function analyzeFile(file: File): Promise<PhotoAnalysis> {
   const [bitmap, digest] = await Promise.all([
     createImageBitmap(file, { imageOrientation: 'from-image' }),
     file.arrayBuffer().then(buffer => crypto.subtle.digest('SHA-256', buffer)),
   ]);
   try {
-    const fine = grayAt(bitmap, DETAIL_LONG_SIDE_PX);
-    const coarse = grayAt(bitmap, ANALYSIS_LONG_SIDE_PX);
+    const { gray, w, h } = grayAt(bitmap, ANALYSIS_LONG_SIDE_PX);
     const sha256 = Array.from(new Uint8Array(digest), b => b.toString(16).padStart(2, '0')).join('');
     return { name: file.name, width: bitmap.width, height: bitmap.height, sha256,
-      sharpness: sharpnessRatio(blurScore(fine.gray, fine.w, fine.h), blurScore(coarse.gray, coarse.w, coarse.h)),
-      luminance: meanLuminance(coarse.gray) };
+      sharpness: sharpness(gray, w, h), luminance: meanLuminance(gray) };
   } finally { bitmap.close(); }
 }

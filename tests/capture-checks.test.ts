@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { BLUR_WARN_THRESHOLD, blurScore, checkDimensions, DARK_WARN_THRESHOLD, findDuplicates, flagBlockingPhotos, listNames, meanLuminance, sharpnessRatio, summarize,
+import { BLUR_WARN_THRESHOLD, blurScore, checkDimensions, DARK_WARN_THRESHOLD, findDuplicates, flagBlockingPhotos, listNames, meanLuminance, sharpness, summarize,
   type PhotoAnalysis } from '@/lib/capture-checks';
 import { MIN_CAPTURE_FILES, RECOMMENDED_CAPTURE_FILES } from '@/lib/contracts';
 
@@ -74,11 +74,14 @@ describe('Capture checks', () => {
     expect(blurScore(new Uint8Array(4), 2, 2)).toBe(0);
   });
 
-  it('rates sharpness by fine-to-coarse detail, independent of scene texture', () => {
-    // Same ratio for a busy and a plain scene; a flat image cannot be judged and is never called blurry.
-    expect(sharpnessRatio(2000, 3000)).toBeCloseTo(sharpnessRatio(100, 150));
-    expect(sharpnessRatio(150, 1000)).toBeLessThan(BLUR_WARN_THRESHOLD);
-    expect(sharpnessRatio(0, 0)).toBe(1);
+  it('rates sharpness by fine-to-coarse detail, independent of contrast, and flags blurred pixels', () => {
+    const board = checkerboard(64, 1);
+    const sharpBoard = sharpness(board, 64, 64);
+    // Same pattern at a tenth of the contrast (a plainer scene) keeps the ratio; blur drops it below the threshold.
+    expect(sharpness(board.map(v => 100 + v / 10), 64, 64)).toBeCloseTo(sharpBoard);
+    expect(sharpBoard).toBeGreaterThan(BLUR_WARN_THRESHOLD);
+    expect(sharpness(boxBlur(checkerboard(64, 4), 64, 2), 64, 64)).toBeLessThan(BLUR_WARN_THRESHOLD);
+    expect(sharpness(new Float32Array(64 * 64).fill(128), 64, 64)).toBe(1);
     expect(summarize([photo('a.jpg', { sharpness: BLUR_WARN_THRESHOLD })], 1).warnings.join(' ')).not.toContain('movidas');
   });
 
