@@ -10,10 +10,10 @@
 
 ## Comprobaciones en el navegador antes de subir
 
-`src/lib/capture-checks.ts` analiza cada foto (orientación EXIF aplicada, copia reducida a 512 px de lado largo):
+`src/lib/capture-checks.ts` analiza cada foto (orientación EXIF aplicada, copia reducida a 1024 px de lado largo; nunca se amplía):
 
-- **Bloquean:** más de un tamaño/orientación en la captura (el worker asume una sola cámara), lado corto < 720 px, archivos duplicados (SHA-256).
-- **Avisan:** fotos que el navegador no puede analizar, lado corto < 1080 px, varianza del laplaciano < 60 (posible desenfoque; calibrado, ver Evidencia), luminancia media < 40/255 (una foto oscura no se marca además como desenfocada), menos de 60 fotos (recomendado).
+- **Bloquean:** más de un tamaño/orientación en la captura (el worker asume una sola cámara), lado corto < 720 px, archivos duplicados (SHA-256). Las fotos causantes se marcan en rojo en las miniaturas y un botón las quita de una vez (se conserva la orientación mayoritaria y la primera copia).
+- **Avisan:** fotos que el navegador no puede analizar, lado corto < 1080 px, nitidez < 0,20 (posible desenfoque: varianza del laplaciano de la copia de 1024 px dividida por la de su mitad promediada 2×2; calibrado, ver Evidencia), luminancia media < 40/255 (una foto oscura no se marca además como desenfocada), menos de 60 fotos (recomendado).
 - Iluminación consistente, imágenes nítidas y escena estática. Evitar basar la captura en espejos y reflejos.
 
 La [guía de PlayCanvas](https://developer.playcanvas.com/user-manual/gaussian-splatting/creating/taking-photos/) describe estas condiciones y orienta a cientos de fotos para escenas grandes. El pipeline actual no admite vídeo ni HEIC directamente.
@@ -64,7 +64,7 @@ Benchmark local (sin GPU de pago), reproducible con los scripts privados de `.se
 **Conclusiones aplicadas:**
 - Mínimo bloqueante **40**: con menos de 30 fotos se registra menos del 50 % en ambas escenas y entre 30 y 40 el resultado es inestable (20–80 %). `RECONSTRUCTION_MIN_IMAGES` y `WORKER_MIN_IMAGES` solo pueden subirlo: un valor menor se eleva a 40.
 - Recomendado **60–80 por estancia** (registro ≥ 95 %); la calidad deja de mejorar hacia **90–100**. Varias estancias conectadas: ~90 o más en total.
-- Desenfoque: varianza del laplaciano a 512 px de lado largo. En 52 fotos reales nítidas, percentil 5 = 88; con desenfoque gaussiano de 1 px, percentil 95 = 47. Umbral de aviso: 60 (solo aviso: paredes lisas pueden puntuar bajo).
+- Desenfoque (métrica anterior, sustituida el 08/10/2026): varianza del laplaciano a 512 px de lado largo, umbral 60, calibrada con 52 fotos de interior de réflex. Ver la recalibración más abajo.
 - No verificado empíricamente: la regla de no girar sobre uno mismo sin desplazarse se basa en la geometría (sin paralaje no hay triangulación), no en este benchmark.
 - Límite: capturas de cámara réflex con tomas espaciadas; deben revalidarse con capturas reales de móvil de viviendas.
 
@@ -87,3 +87,21 @@ Cámaras registradas y error frente a las poses de referencia (mediana de giro; 
 **Pipeline de producción en GPU (RTX 4090, playroom, 60 fotos):** COLMAP 3.9.1 (CPU) 6,5 min (extracción 20 s, emparejamiento exhaustivo 5,5 min); 49/60 cámaras en el mayor modelo; splatfacto 30.000 iteraciones 19 min (incluye ~5 min de compilación JIT de gsplat en el primer uso); evaluación en vistas reservadas PSNR 25,5 dB, SSIM 0,83, LPIPS 0,28; exportación 510.809 gaussianas (127 MB PLY). Coste de GPU ≈ 0,3 USD por estancia a 0,74 USD/h. Con COLMAP con CUDA y gsplat precompilado en la imagen, el tiempo baja.
 
 **Corrección del worker:** COLMAP puede dividir una captura en varios modelos y `ns-process-data` 1.1.5 convierte siempre `sparse/0`. Con 60 fotos de una estancia, `sparse/0` tenía 2 cámaras y `sparse/1`, 49. El worker ahora promueve el modelo con más cámaras antes de comprobar el registro.
+
+### Captura real de móvil en el navegador (08/10/2026)
+
+Prueba en Chromium con 41 fotos de iPhone 7 (12 MP, exterior; dataset público `alicevision/dataset_monstree`), sesión local y reconstrucción deshabilitada:
+
+- 5 de 41 fotos salieron en horizontal y el resto en vertical: la captura queda bloqueada, igual que la rechazaría el worker (`worker/images.py`). Análisis de las 41 fotos en 12 s.
+- Con la métrica anterior el aviso de desenfoque solo saltaba a partir de ~12 px de desenfoque a resolución completa (varianza 3.279 nítida, 1.279 con 4 px, 231 con 8 px, 58 con 12 px), aunque el worker trabaja a 2048 px. Motivó la recalibración siguiente.
+
+### Recalibración del aviso de desenfoque (08/10/2026)
+
+Fotos públicas: 41 de iPhone 7 (árbol, `alicevision/dataset_monstree`) y 67 de 2736×1540 (cabeza de Buda sobre una mesa, `alicevision/dataset_buddha`). Desenfoque gaussiano σ expresado en px a 2048 de lado largo, la resolución con la que trabaja el worker.
+
+- La varianza absoluta no sirve con un umbral fijo: a 1024 px, percentil 5 de las nítidas = 973 (árbol) y 49 (Buda); percentil 95 con σ = 2 = 232 (árbol). Una foto nítida del Buda puntúa por debajo de una corteza desenfocada.
+- La proporción entre la copia de 1024 px y su mitad promediada 2×2 sí es comparable entre escenas (reducción a 1024 con sharp/libvips): nítidas, mínimo 0,44 (árbol) y 0,27 (Buda); σ = 1,5, mediana 0,24 y 0,21; σ = 2, máximo 0,18 y 0,21. Umbral de aviso: 0,20. La mitad se calcula en JavaScript y no depende del navegador: así la relación es siempre exactamente 2× y solo queda una reducción hecha por el navegador.
+- En Chromium, con `analyzeFile` real: 0/108 fotos nítidas avisadas; σ = 1,5: 9/41 (árbol) y 48/67 (Buda); σ = 2: 41/41 y 67/67. Análisis de 41 fotos de 12 MP en ~12 s, igual que antes. La diferencia con libvips en σ = 1,5 muestra que el filtro de reducción del navegador influye: Safari y Firefox no se han probado.
+- Efecto en COLMAP (PyCOLMAP 4.2.0, CPU, una cámara, 1 de cada 3 fotos desenfocada): todas las fotos se registran hasta σ = 3 en ambas escenas. Lo que cae es la aportación de cada foto desenfocada (puntos 3D observados, frente a la misma foto nítida): árbol 93 % (σ = 2) y 67 % (σ = 3); Buda 67 % (σ = 1), 33 % (σ = 1,5), 18 % (σ = 2) y 9 % (σ = 3). Puntos 3D totales del Buda: 24.589 → 16.418 (σ = 1,5) → 14.992 (σ = 2).
+- Lectura: con capturas densas el desenfoque no impide colocar la cámara, pero en escenas poco texturadas (lo habitual en interiores) la foto apenas aporta a partir de σ ≈ 1,5. No medido: el efecto en la calidad del Gaussian Splatting (necesita GPU).
+- Límites: dos escenas, ninguna de interior de vivienda; la métrica antigua se calibró con fotos de interior que no se han repetido con la nueva. Una imagen sin ningún detalle no se puede juzgar y no se marca como movida; una casi lisa (pared con ruido, foto muy comprimida) da una proporción dominada por el ruido y el aviso no es fiable. Fotos con lado largo < 1024 px se miden a su resolución original: la relación sigue siendo 2×, pero el umbral no se ha calibrado para ellas. Revalidar con capturas reales de viviendas.
