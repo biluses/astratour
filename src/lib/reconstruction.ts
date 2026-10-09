@@ -155,8 +155,9 @@ export async function failReconstruction(id: string, payload: z.infer<typeof fai
       RETURNING tour_id, status
     )
     UPDATE tours t SET status = CASE WHEN failed.status = 'failed' THEN 'error' ELSE 'procesando' END, updated_at = now()
-    FROM failed WHERE t.id = failed.tour_id RETURNING t.id`;
+    FROM failed WHERE t.id = failed.tour_id RETURNING t.id, t.status`;
   if (!rows.length) throw new HttpError(409, 'Lease expired or ownership lost');
+  return { requeued: rows[0].status === 'procesando' };
 }
 
 export async function recoverReconstructionJobs() {
