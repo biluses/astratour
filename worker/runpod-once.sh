@@ -8,14 +8,14 @@ trap stop_pod EXIT
 (sleep "${WORKER_POD_MAX_SECONDS:-5400}"; runpodctl stop pod "$RUNPOD_POD_ID") &
 
 apt-get update -qq
-DEBIAN_FRONTEND=noninteractive apt-get install -y -qq colmap libegl1 libgl1 xvfb git curl xz-utils > /dev/null
+DEBIAN_FRONTEND=noninteractive apt-get install -y -qq colmap libegl1 libgl1 libvulkan1 xvfb git curl xz-utils > /dev/null
 curl -fsSL https://nodejs.org/dist/v22.22.2/node-v22.22.2-linux-x64.tar.xz | tar -xJ -C /opt
 python3 -m venv --system-site-packages /workspace/ns
 /workspace/ns/bin/pip install -q --ignore-installed blinker nerfstudio==1.1.5
 export PATH=/workspace/ns/bin:/opt/node-v22.22.2-linux-x64/bin:$PATH
 
 rm -rf /workspace/astratour
-git clone --depth 1 https://github.com/biluses/astratour /workspace/astratour
+git clone --depth 1 --branch "${ASTRATOUR_REF:-main}" https://github.com/biluses/astratour /workspace/astratour
 cd /workspace/astratour/worker
 npm ci --omit=dev --no-audit --no-fund
 

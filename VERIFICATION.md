@@ -36,7 +36,16 @@ Integrado en `main` (`c1c89ed`): #1 reducción a 2048 px antes de subir, #2 disp
 | Reducción de subida | 41 JPEG 168 → 42 MB; 67 PNG 295 → 18 MB; límite de 10 MB aplicado al archivo reducido |
 | Vercel | Despliegues de `main` correctos tras cada fusión. No se ha abierto la web pública desde este entorno |
 
-Pendiente, sin verificar: Safari de iPhone (análisis, avisos y tiempo de selección); Google OAuth de extremo a extremo; subida a Blob, GPU y pago con credenciales reales; imagen del worker (#5) en GPU (arranque, ms/paso, SOG en GPU); endpoint de Runpod Serverless y `after()` en Vercel; activar Web Analytics en el panel de Vercel.
+Pendiente, sin verificar: Safari de iPhone (análisis, avisos y tiempo de selección); Google OAuth de extremo a extremo; pago con credenciales reales; endpoint de Runpod Serverless y `after()` en Vercel; activar Web Analytics en el panel de Vercel.
+
+Imagen del worker (#5) en GPU, 09/10/2026, Runpod RTX 4090 bajo demanda, tours reales en producción (subida a Blob incluida):
+
+| Prueba | Fotos | COLMAP | Entrenamiento 30k | SOG | Despliegue → tour | Coste |
+|---|---|---|---|---|---|---|
+| `sha-22725fb` (COLMAP de apt, sin CUDA) | 60, una estancia | ~7 min | 26–30 ms/paso | GPU | ~32 min | 0,48 $ |
+| `sha-79dce59` (COLMAP 3.9.1 con CUDA, cuota cgroup v1) | 96, casa con varias estancias; 94 registradas | ~1,5 min | 13–15 ms/paso, GPU 80–87 % | GPU 100 %, ~9 s | ~19 min | ~0,27 $ |
+
+Ambos tours terminaron con 8 renders de vista previa y el pod se detuvo solo. Las dos pruebas difieren en escena, cuota de CPU del host y código: la mejora de COLMAP se atribuye a CUDA; la del entrenamiento no está aislada.
 
 ## Qué se prueba y qué no
 

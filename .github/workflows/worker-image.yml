@@ -1,0 +1,76 @@
+name: Worker image
+on:
+  push:
+    branches: [main, feat/worker-image]
+    paths:
+      - worker/**
+      - .github/workflows/worker-image.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  packages: write
+concurrency:
+  group: worker-image-${{ github.ref }}
+  cancel-in-progress: true
+env:
+  IMAGE: ghcr.io/biluses/astratour-worker
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      # ubuntu-latest currently has ~87 GB free on /; an earlier rm/docker-restart step hung the runner.
+      - name: Disk space
+        run: df -h /
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=sha,prefix=sha-
+            type=ref,event=branch
+          labels: org.opencontainers.image.source=https://github.com/${{ github.repository }}
+      # Cache first (exported even if the smoke check fails), so a retry skips the gsplat compile.
+      - name: Build runtime and export cache
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: worker
+          file: worker/Dockerfile.runpod
+          target: runtime
+          platforms: linux/amd64
+          cache-from: type=registry,ref=${{ env.IMAGE }}:buildcache
+          cache-to: type=registry,ref=${{ env.IMAGE }}:buildcache,mode=max
+      - name: Smoke check
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: worker
+          file: worker/Dockerfile.runpod
+          target: smoke
+          platforms: linux/amd64
+      - id: push
+        name: Push
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: worker
+          file: worker/Dockerfile.runpod
+          target: runtime
+          platforms: linux/amd64
+          push: true
+          provenance: false
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+      - name: Summary
+        env:
+          DIGEST: ${{ steps.push.outputs.digest }}
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          size=$(docker buildx imagetools inspect --raw "$IMAGE@$DIGEST" | jq '[.layers[].size] | add / 1e9 * 100 | round / 100')
+          { echo "Digest: \`$DIGEST\`"; echo "Compressed size: ${size} GB"; echo "Tags:"; echo "$TAGS" | sed 's/^/- /'; } | tee -a "$GITHUB_STEP_SUMMARY"
+          df -h /

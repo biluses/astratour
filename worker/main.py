@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import signal
@@ -146,10 +147,48 @@ class Lease:
         self.thread.join(timeout=35)
 
 
-def run_command(arguments, timeout, lease, work, deadline, max_disk, failure_code='PROCESS_FAILED'):
+def cpu_quota(path=Path('/sys/fs/cgroup/cpu.max'), v1_dir=Path('/sys/fs/cgroup/cpu')):
+    """CPUs the container may use. Pods expose every host core (64-128) but cap usage via cgroups (v2 or v1)."""
+    try:
+        quota, period = path.read_text().split()[:2]
+    except (OSError, ValueError):
+        try:
+            quota = (v1_dir / 'cpu.cfs_quota_us').read_text().strip()
+            period = (v1_dir / 'cpu.cfs_period_us').read_text().strip()
+        except OSError:
+            quota = period = 'max'
+    try:
+        if quota not in ('max', '-1'):
+            return max(1, int(int(quota) / int(period)))
+    except ValueError:
+        pass
+    return os.cpu_count() or 1
+
+
+def cpu_fallback_allowed(error, deadline):
+    """Retry SOG on CPU only when the GPU encoder itself failed or hung, never on lease, disk or job deadline errors."""
+    return error.code in ('SOG_GPU_FAILED', 'PROCESS_TIMEOUT') and time.monotonic() < deadline
+
+
+def training_percent(log):
+    """Last step percentage ns-train printed ("1390 (4.63%) 28.6 ms ..."), or None."""
+    try:
+        with log.open('rb') as handle:
+            handle.seek(max(0, log.stat().st_size - 4096))
+            matches = re.findall(rb'(?:^|[\r\n])[ \t]*\d+ \((\d+(?:\.\d+)?)%\)', handle.read())
+    except OSError:
+        return None
+    return min(100.0, float(matches[-1])) if matches else None
+
+
+def run_command(arguments, timeout, lease, work, deadline, max_disk, failure_code='PROCESS_FAILED', progress=None):
     """Kill the entire subprocess group on a timeout, expired lease or disk bound."""
     # Child applications do not need the API or Blob credentials (only bridge does).
     environment = dict(os.environ)
+    # Measured on a Runpod RTX 4090 pod (13.6 CPU quota, 128 visible cores): torch spawned 211 threads,
+    # was CPU-throttled and trained at ~60 ms/step with the GPU at ~20 %. Size thread pools to the quota.
+    for key in ('OMP_NUM_THREADS', 'MKL_NUM_THREADS', 'OPENBLAS_NUM_THREADS'):
+        environment.setdefault(key, str(cpu_quota()))
     if Path(str(arguments[1]) if len(arguments) > 1 else '').name != 'bridge.mjs':
         for key in ('RECONSTRUCTION_WORKER_SECRET', 'BLOB_READ_WRITE_TOKEN', 'VERCEL_AUTOMATION_BYPASS_SECRET'):
             environment.pop(key, None)
@@ -170,6 +209,11 @@ def run_command(arguments, timeout, lease, work, deadline, max_disk, failure_cod
                     if total > max_disk or shutil.disk_usage(work).free < 2 * 1024**3:
                         raise JobError('DISK_LIMIT')
                     next_disk_check = now + 15
+                    # Training is ~15 min of a single stage: map its step percentage onto (low, high).
+                    percent = training_percent(log) if progress else None
+                    if percent is not None:
+                        low, high = progress
+                        lease.set(int(low + (high - low) * percent / 100), lease.stage)
                 time.sleep(1)
             if process.returncode:
                 raise JobError(failure_code)
@@ -232,8 +276,8 @@ def execute_job(api, job):
         with tempfile.TemporaryDirectory(prefix=f"job-{job['id']}-", dir=workspace) as temp:
             work = Path(temp)
             deadline = time.monotonic() + bounded_int('WORKER_JOB_TIMEOUT_SECONDS', 14400, 60, 14400)
-            def run(args, timeout=1800, failure_code='PROCESS_FAILED'):
-                run_command(args, timeout, lease, work, deadline, max_disk, failure_code)
+            def run(args, timeout=1800, failure_code='PROCESS_FAILED', progress=None):
+                run_command(args, timeout, lease, work, deadline, max_disk, failure_code, progress)
             raw, normalized, dataset, trained, exported, delivery = [work / name for name in ('raw', 'normalized', 'dataset', 'trained', 'exported', 'delivery')]
             for folder in (raw, normalized, delivery):
                 folder.mkdir()
@@ -265,7 +309,7 @@ def execute_job(api, job):
             run(['ns-train', 'splatfacto', '--data', dataset, '--output-dir', trained,
                  '--experiment-name', 'astratour', '--timestamp', 'run', '--vis', 'tensorboard',
                  '--max-num-iterations', str(iterations), '--pipeline.datamanager.cache-images', 'cpu', '--pipeline.datamanager.cache-images-type', 'uint8'],
-                bounded_int('WORKER_TRAIN_TIMEOUT_SECONDS', 7200, 60, 10800))
+                bounded_int('WORKER_TRAIN_TIMEOUT_SECONDS', 7200, 60, 10800), progress=(30, 74))
             configs = list(trained.rglob('config.yml'))
             if len(configs) != 1:
                 raise JobError('TRAINING_OUTPUT_INVALID')
@@ -284,13 +328,23 @@ def execute_job(api, job):
             transform = ROOT / 'node_modules' / '.bin' / 'splat-transform'
             model = delivery / 'scene.sog'
             # Nerfstudio PLY exports z-up. Rotate BOTH scene and camera Rx(-90).
-            # CPU SOG encoding avoids relying on a second WebGPU driver stack on CUDA servers.
-            run([transform, '--gpu', 'cpu', ply, '--filter-nan', '--rotate', '-90,0,0', model])
+            # SOG compression k-means: WebGPU takes seconds; the CPU path ran >30 min on 500K gaussians
+            # (Runpod 4090 pod, 07/10/2026). Try the GPU adapter first and fall back to CPU.
+            package_timeout = bounded_int('WORKER_PACKAGE_TIMEOUT_SECONDS', 5400, 60, 10800)
+            device = ['--gpu', '0']
+            try:
+                run([transform, *device, ply, '--filter-nan', '--rotate', '-90,0,0', model], 900, 'SOG_GPU_FAILED')
+            except JobError as error:
+                if not cpu_fallback_allowed(error, deadline):
+                    raise
+                model.unlink(missing_ok=True)
+                device = ['--gpu', 'cpu', '--max-workers', str(cpu_quota())]
+                run([transform, *device, ply, '--filter-nan', '--rotate', '-90,0,0', model], package_timeout)
             settings_manifest = work / 'settings-manifest.json'
             settings = work / 'viewer-settings.json'
             write_json(settings_manifest, {'camera': previews['camera'], 'output': str(settings)})
             run(['node', ROOT / 'bridge.mjs', 'settings', settings_manifest])
-            run([transform, '--gpu', 'cpu', '--viewer-settings', settings, model, delivery / 'index.html'])
+            run([transform, *device, '--viewer-settings', settings, model, delivery / 'index.html'], package_timeout)
             write_json(delivery / 'manifest.json', {'version': 1, 'is3D': True,
                 'engine': 'Nerfstudio 1.1.5 / Splatfacto', 'viewer': 'SuperSplat 1.31.2',
                 'inputImages': len(records), 'registeredImages': registered, 'iterations': iterations,
