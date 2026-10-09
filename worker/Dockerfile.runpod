@@ -5,6 +5,7 @@ FROM runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404 AS colmap
 
 # Ubuntu's colmap package has no CUDA: SIFT extraction and exhaustive matching ran on the CPU
 # (~6.5 min for 60 photos on an RTX 4090 pod, GPU at 0 %). Same version (3.9.1), built with CUDA.
+# 3.9.1 predates gcc 13 (missing <memory>/<cstdint> includes), which Ubuntu patches; force them.
 RUN apt-get update -qq \
     && apt-get install -y -qq git cmake ninja-build build-essential libboost-program-options-dev \
        libboost-filesystem-dev libboost-graph-dev libboost-system-dev libeigen3-dev libflann-dev \
@@ -15,6 +16,7 @@ RUN git clone -q --depth 1 --branch 3.9.1 https://github.com/colmap/colmap.git /
     && cmake -S /tmp/colmap -B /tmp/colmap/build -G Ninja -DCMAKE_BUILD_TYPE=Release \
        -DCMAKE_INSTALL_PREFIX=/opt/colmap -DGUI_ENABLED=OFF -DTESTS_ENABLED=OFF \
        -DCUDA_ENABLED=ON -DCMAKE_CUDA_ARCHITECTURES="86;89;90;120" \
+       -DCMAKE_CXX_FLAGS="-include memory -include cstdint" \
     && cmake --build /tmp/colmap/build -j 4 \
     && cmake --install /tmp/colmap/build \
     && rm -rf /tmp/colmap
