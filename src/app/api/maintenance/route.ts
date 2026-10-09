@@ -2,6 +2,10 @@ import { timingSafeEqual } from 'node:crypto';
 import { getSql } from '@/lib/db';
 import { recoverReconstructionJobs } from '@/lib/reconstruction';
 import { apiError, json } from '@/lib/http';
+import { triggerGpuWorker } from '@/lib/gpu-trigger';
+
+// Queued longer than this without a worker picking it up: the original trigger was lost.
+const STALE_QUEUE_MINUTES = 10;
 
 export const runtime = 'nodejs';
 export async function GET(request: Request) {
@@ -19,6 +23,11 @@ export async function GET(request: Request) {
         WHERE status = 'procesando' AND processing_started_at < now() - interval '6 minutes'
           AND NOT EXISTS (SELECT 1 FROM reconstruction_jobs j WHERE j.tour_id = tours.id)`,
     ]);
+    // Safety net: covers lost triggers and jobs re-queued by lease recovery above.
+    // created_at (not updated_at) because recovery and retries reset updated_at.
+    const [stale] = await sql`SELECT 1 FROM reconstruction_jobs WHERE status = 'queued'
+      AND created_at < now() - make_interval(mins => ${STALE_QUEUE_MINUTES}) LIMIT 1`;
+    if (stale) await triggerGpuWorker();
     return json({ ok: true });
   } catch (error) { return apiError(error); }
 }
