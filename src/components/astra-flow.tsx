@@ -11,7 +11,7 @@ import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
-import { createTourSchema, MAX_FILES, MAX_TOTAL_BYTES, RECOMMENDED_CAPTURE_FILES, type TourView } from '@/lib/contracts';
+import { createTourSchema, MAX_FILE_BYTES, MAX_FILES, MAX_TOTAL_BYTES, RECOMMENDED_CAPTURE_FILES, type TourView } from '@/lib/contracts';
 import { analyzeFile, summarize, type CaptureAnalysis } from '@/lib/capture-checks';
 import { cn } from '@/lib/utils';
 
@@ -86,6 +86,9 @@ export function AstraFlow({ user, initialTour, initialError, accessReady, paymen
   const [files, setFiles] = useState<File[]>([]);
   const [thumbnails, setThumbnails] = useState<string[]>([]);
   const [analyses] = useState(() => new WeakMap<File, CaptureAnalysis>());
+  const [prepared] = useState(() => new WeakMap<File, File>()); // original -> 2048 px JPEG (or itself)
+  // All-or-nothing: one unprepared photo would mix original and downscaled sizes from one camera.
+  const uploadBodies = (list: File[]) => list.every(f => prepared.has(f)) ? list.map(f => prepared.get(f)!) : list;
   // map, not flatMap: checks.flagged holds indices into files.
   const checks = useMemo(() => summarize(files.map(f => analyses.get(f) ?? { name: f.name, unreadable: true as const }), minimumImages), [files, analyses, minimumImages]);
   const flagged = useMemo(() => new Set(checks.flagged), [checks]);
@@ -154,8 +157,10 @@ export function AstraFlow({ user, initialTour, initialError, accessReady, paymen
   async function chooseFiles(incoming: File[]) {
     if (!canSelect) return;
     const next = [...files, ...incoming];
-    if (!createTourSchema.safeParse({ files: next.map(f => ({ name: f.name, size: f.size, type: f.type })) }).success) {
-      setError(`Selecciona hasta ${MAX_FILES} fotos JPG o PNG: 10 MB por imagen y ${Math.round(MAX_TOTAL_BYTES / 1024 ** 3)} GB en total.`);
+    const describe = (list: File[]) => ({ files: list.map(f => ({ name: f.name, size: f.size, type: f.type })) });
+    // Type and count first; byte limits apply to what is uploaded, after the 2048 px resize (large originals are fine).
+    if (!createTourSchema.safeParse({ files: next.map(f => ({ name: f.name, size: Math.min(f.size, MAX_FILE_BYTES), type: f.type })) }).success) {
+      setError(`Selecciona hasta ${MAX_FILES} fotos JPG o PNG.`);
       return;
     }
     setError(null); setBusy('analyze'); setProgress(0);
@@ -163,9 +168,16 @@ export function AstraFlow({ user, initialTour, initialError, accessReady, paymen
       // ponytail: sequential decode bounds memory with hundreds of 12-48 MP photos; add a small pool if it proves slow.
       for (const [index, file] of incoming.entries()) {
         if (!analyses.has(file)) {
-          try { analyses.set(file, await analyzeFile(file)); } catch { analyses.set(file, { name: file.name, unreadable: true }); }
+          try {
+            const { analysis, upload } = await analyzeFile(file);
+            analyses.set(file, analysis); prepared.set(file, upload);
+          } catch { analyses.set(file, { name: file.name, unreadable: true }); }
         }
         setProgress((index + 1) / incoming.length * 100);
+      }
+      if (!createTourSchema.safeParse(describe(uploadBodies(next))).success) {
+        setError(`Cada foto puede ocupar como máximo 10 MB una vez preparada para subir, y ${Math.round(MAX_TOTAL_BYTES / 1024 ** 3)} GB en total. Usa JPG o PNG originales de la cámara.`);
+        return;
       }
       setFiles(next);
     } finally { setBusy(null); }
@@ -186,9 +198,10 @@ export function AstraFlow({ user, initialTour, initialError, accessReady, paymen
     try {
       if (files.length) {
         setBusy('upload'); setProgress(0);
+        const bodies = uploadBodies(files);
         if (!job.current) {
           const created = await api<Omit<Job, 'completed'>>('/api/tours', { method: 'POST', body: JSON.stringify({
-            title: title.trim() || 'Mi propiedad', files: files.map(f => ({ name: f.name, size: f.size, type: f.type })),
+            title: title.trim() || 'Mi propiedad', files: bodies.map(f => ({ name: f.name, size: f.size, type: f.type })),
           }) });
           job.current = { ...created, completed: new Set() };
           setTour({ id: created.tourId, title: title.trim() || 'Mi propiedad', status: 'borrador', simulated: false, images: [], modelUrl: null });
@@ -199,7 +212,7 @@ export function AstraFlow({ user, initialTour, initialError, accessReady, paymen
         for (const [index, descriptor] of currentJob.uploads.entries()) {
           if (currentJob.completed.has(descriptor.imageId)) continue;
           try {
-            await upload(descriptor.pathname, files[index], {
+            await upload(descriptor.pathname, bodies[index], {
               access: 'private', handleUploadUrl: '/api/upload',
               clientPayload: JSON.stringify({ tourId: currentJob.tourId, imageId: descriptor.imageId }),
               onUploadProgress: ({ percentage }) => setProgress((index + percentage / 100) / files.length * 100),
@@ -307,7 +320,7 @@ export function AstraFlow({ user, initialTour, initialError, accessReady, paymen
                 <div className="mb-4 flex size-12 items-center justify-center rounded-xl bg-secondary text-primary">{user ? <UploadCloud className="size-6" strokeWidth={1.5} /> : <LockKeyhole className="size-5" />}</div>
                 <p className="text-base font-medium">{user ? 'Arrastra tus fotos aquí' : 'Conecta tu cuenta para subir fotos'}</p>
                 <p className="mt-1.5 text-sm text-muted-foreground">{user ? <>o <span className="text-primary underline decoration-primary/40 underline-offset-4">selecciona archivos</span> desde tu dispositivo</> : 'Después podrás elegir las imágenes de tu propiedad.'}</p>
-                <p className="mt-4 font-mono text-xs text-muted-foreground">JPG / PNG · 10 MB por foto · 2 GB en total</p>
+                <p className="mt-4 font-mono text-xs text-muted-foreground">JPG / PNG · se reducen a 2048 px antes de subir</p>
               </div>
               {busy === 'analyze' ? <p role="status" aria-live="polite" className="mt-4 flex items-center gap-2 text-sm text-muted-foreground"><LoaderCircle className="size-4 animate-spin text-primary" />Analizando fotos… {Math.round(progress)}%</p> : null}
               {checks.blocking.length ? <div role="alert" className="mt-4 rounded-xl border border-red-400/30 bg-red-400/8 p-4 text-sm leading-relaxed text-red-200"><p className="flex items-center gap-2 font-medium"><CircleAlert className="size-4 shrink-0" />Corrige esto antes de generar</p><ul className="mt-2 list-disc space-y-1 pl-6">{checks.blocking.map(m => <li key={m}>{m}</li>)}</ul>
