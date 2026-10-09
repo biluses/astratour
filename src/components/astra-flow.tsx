@@ -11,7 +11,7 @@ import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
-import { createTourSchema, MAX_FILES, MAX_TOTAL_BYTES, RECOMMENDED_CAPTURE_FILES, type TourView } from '@/lib/contracts';
+import { createTourSchema, MAX_FILE_BYTES, MAX_FILES, MAX_TOTAL_BYTES, RECOMMENDED_CAPTURE_FILES, type TourView } from '@/lib/contracts';
 import { analyzeFile, summarize, type CaptureAnalysis } from '@/lib/capture-checks';
 import { cn } from '@/lib/utils';
 
@@ -86,8 +86,12 @@ export function AstraFlow({ user, initialTour, initialError, accessReady, paymen
   const [files, setFiles] = useState<File[]>([]);
   const [thumbnails, setThumbnails] = useState<string[]>([]);
   const [analyses] = useState(() => new WeakMap<File, CaptureAnalysis>());
-  const [prepared] = useState(() => new WeakMap<File, File>()); // original -> downscaled JPEG (or itself)
-  const checks = useMemo(() => summarize(files.flatMap(f => analyses.get(f) ?? []), minimumImages), [files, analyses, minimumImages]);
+  const [prepared] = useState(() => new WeakMap<File, File>()); // original -> 2048 px JPEG (or itself)
+  // All-or-nothing: one unprepared photo would mix original and downscaled sizes from one camera.
+  const uploadBodies = (list: File[]) => list.every(f => prepared.has(f)) ? list.map(f => prepared.get(f)!) : list;
+  // map, not flatMap: checks.flagged holds indices into files.
+  const checks = useMemo(() => summarize(files.map(f => analyses.get(f) ?? { name: f.name, unreadable: true as const }), minimumImages), [files, analyses, minimumImages]);
+  const flagged = useMemo(() => new Set(checks.flagged), [checks]);
   const [title, setTitle] = useState('');
   const [error, setError] = useState(initialError);
   const [busy, setBusy] = useState<Busy>(null);
@@ -153,8 +157,10 @@ export function AstraFlow({ user, initialTour, initialError, accessReady, paymen
   async function chooseFiles(incoming: File[]) {
     if (!canSelect) return;
     const next = [...files, ...incoming];
-    if (!createTourSchema.safeParse({ files: next.map(f => ({ name: f.name, size: f.size, type: f.type })) }).success) {
-      setError(`Selecciona hasta ${MAX_FILES} fotos JPG o PNG: 10 MB por imagen y ${Math.round(MAX_TOTAL_BYTES / 1024 ** 3)} GB en total.`);
+    const describe = (list: File[]) => ({ files: list.map(f => ({ name: f.name, size: f.size, type: f.type })) });
+    // Type and count first; byte limits apply to what is uploaded, after the 2048 px resize (large originals are fine).
+    if (!createTourSchema.safeParse({ files: next.map(f => ({ name: f.name, size: Math.min(f.size, MAX_FILE_BYTES), type: f.type })) }).success) {
+      setError(`Selecciona hasta ${MAX_FILES} fotos JPG o PNG.`);
       return;
     }
     setError(null); setBusy('analyze'); setProgress(0);
@@ -168,6 +174,10 @@ export function AstraFlow({ user, initialTour, initialError, accessReady, paymen
           } catch { analyses.set(file, { name: file.name, unreadable: true }); }
         }
         setProgress((index + 1) / incoming.length * 100);
+      }
+      if (!createTourSchema.safeParse(describe(uploadBodies(next))).success) {
+        setError(`Cada foto puede ocupar como máximo 10 MB una vez preparada para subir, y ${Math.round(MAX_TOTAL_BYTES / 1024 ** 3)} GB en total. Usa JPG o PNG originales de la cámara.`);
+        return;
       }
       setFiles(next);
     } finally { setBusy(null); }
@@ -188,8 +198,7 @@ export function AstraFlow({ user, initialTour, initialError, accessReady, paymen
     try {
       if (files.length) {
         setBusy('upload'); setProgress(0);
-        // All-or-nothing: one unprepared photo would mix original and downscaled sizes from one camera.
-        const bodies = files.every(f => prepared.has(f)) ? files.map(f => prepared.get(f)!) : files;
+        const bodies = uploadBodies(files);
         if (!job.current) {
           const created = await api<Omit<Job, 'completed'>>('/api/tours', { method: 'POST', body: JSON.stringify({
             title: title.trim() || 'Mi propiedad', files: bodies.map(f => ({ name: f.name, size: f.size, type: f.type })),
@@ -311,15 +320,16 @@ export function AstraFlow({ user, initialTour, initialError, accessReady, paymen
                 <div className="mb-4 flex size-12 items-center justify-center rounded-xl bg-secondary text-primary">{user ? <UploadCloud className="size-6" strokeWidth={1.5} /> : <LockKeyhole className="size-5" />}</div>
                 <p className="text-base font-medium">{user ? 'Arrastra tus fotos aquí' : 'Conecta tu cuenta para subir fotos'}</p>
                 <p className="mt-1.5 text-sm text-muted-foreground">{user ? <>o <span className="text-primary underline decoration-primary/40 underline-offset-4">selecciona archivos</span> desde tu dispositivo</> : 'Después podrás elegir las imágenes de tu propiedad.'}</p>
-                <p className="mt-4 font-mono text-xs text-muted-foreground">JPG / PNG · 10 MB por foto · 2 GB en total</p>
+                <p className="mt-4 font-mono text-xs text-muted-foreground">JPG / PNG · se reducen a 2048 px antes de subir</p>
               </div>
               {busy === 'analyze' ? <p role="status" aria-live="polite" className="mt-4 flex items-center gap-2 text-sm text-muted-foreground"><LoaderCircle className="size-4 animate-spin text-primary" />Analizando fotos… {Math.round(progress)}%</p> : null}
-              {checks.blocking.length ? <div role="alert" className="mt-4 rounded-xl border border-red-400/30 bg-red-400/8 p-4 text-sm leading-relaxed text-red-200"><p className="flex items-center gap-2 font-medium"><CircleAlert className="size-4 shrink-0" />Corrige esto antes de generar</p><ul className="mt-2 list-disc space-y-1 pl-6">{checks.blocking.map(m => <li key={m}>{m}</li>)}</ul></div> : null}
+              {checks.blocking.length ? <div role="alert" className="mt-4 rounded-xl border border-red-400/30 bg-red-400/8 p-4 text-sm leading-relaxed text-red-200"><p className="flex items-center gap-2 font-medium"><CircleAlert className="size-4 shrink-0" />Corrige esto antes de generar</p><ul className="mt-2 list-disc space-y-1 pl-6">{checks.blocking.map(m => <li key={m}>{m}</li>)}</ul>
+                {flagged.size && !job.current ? <Button variant="outline" size="sm" className="mt-3" disabled={Boolean(busy)} onClick={() => setFiles(v => v.filter((_, i) => !flagged.has(i)))}><X />Quitar {flagged.size === 1 ? 'la foto marcada' : `las ${flagged.size} fotos marcadas`}</Button> : null}</div> : null}
               {checks.warnings.length ? <div role="status" className="mt-4 rounded-xl border border-amber-400/30 bg-amber-400/8 p-4 text-sm leading-relaxed text-amber-200"><p className="flex items-center gap-2 font-medium"><CircleAlert className="size-4 shrink-0" />Revisa estas fotos</p><ul className="mt-2 list-disc space-y-1 pl-6">{checks.warnings.map(m => <li key={m}>{m}</li>)}</ul></div> : null}
-              {files.length ? <div className="mt-4 grid grid-cols-3 gap-3 sm:grid-cols-6">{files.slice(0, 60).map((file, i) => <div key={`${file.name}-${i}`} className="group relative aspect-square overflow-hidden rounded-lg border border-border bg-background">
-                {thumbnails[i] ? <Image src={thumbnails[i]} alt={file.name} fill unoptimized className="object-cover" sizes="150px" /> : null}
+              {files.length ? <div className="mt-4 grid grid-cols-3 gap-3 sm:grid-cols-6">{files.slice(0, 60).map((file, i) => <div key={`${file.name}-${i}`} className={cn('group relative aspect-square overflow-hidden rounded-lg border border-border bg-background', flagged.has(i) && 'border-2 border-red-400')}>
+                {thumbnails[i] ? <Image src={thumbnails[i]} alt={flagged.has(i) ? `${file.name} (marcada: corrígela o quítala)` : file.name} fill unoptimized className="object-cover" sizes="150px" /> : null}
                 {!job.current ? <Button variant="secondary" size="icon" className="absolute right-1 top-1 size-7 bg-black/70" aria-label={`Quitar ${file.name}`} disabled={Boolean(busy)} onClick={() => setFiles(v => v.filter((_, index) => index !== i))}><X className="size-3" /></Button> : null}
-                <span className="absolute inset-x-0 bottom-0 truncate bg-black/70 px-2 py-1 text-xs">{file.name}</span>
+                <span className={cn('absolute inset-x-0 bottom-0 truncate px-2 py-1 text-xs', flagged.has(i) ? 'bg-red-900/90' : 'bg-black/70')}>{file.name}</span>
               </div>)}</div> : null}
               {files.length > 60 ? <p className="mt-3 text-xs text-muted-foreground">Mostrando las primeras 60 miniaturas de {files.length} fotos seleccionadas.</p> : null}
               <div className="mt-5 flex flex-wrap items-center justify-between gap-4"><p className="max-w-xl text-xs leading-relaxed text-muted-foreground">Mínimo {minimumImages} fotos; recomendamos {RECOMMENDED_CAPTURE_FILES}–80 por estancia. Cada zona debe salir en al menos 3 fotos: gira como máximo unos 20° entre tomas (un tercio del encuadre) y da un paso entre grupos de fotos en lugar de girar sobre ti mismo. Misma cámara, sin zoom y sin mezclar fotos verticales y horizontales. <Link href="/guia-captura" className="text-primary underline decoration-primary/40 underline-offset-4">Consulta la guía de captura</Link>.</p>
