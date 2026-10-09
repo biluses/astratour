@@ -45,4 +45,5 @@ RUN set -eux; \
     elfs=$(cuobjdump --list-elf "$so"); \
     for arch in sm_86 sm_89 sm_90 sm_120; do echo "$elfs" | grep -q "$arch"; done; \
     colmap help > /dev/null; node --version; command -v ns-train xvfb-run runpodctl; \
-    test -x /opt/astratour/run-once.sh; test -d /opt/astratour/worker/node_modules/@vercel/blob
+    test -x /opt/astratour/run-once.sh; test -d /opt/astratour/worker/node_modules/@vercel/blob; \
+    python -c "import importlib.util as u; s = u.spec_from_file_location('h', '/opt/astratour/worker/serverless_handler.py'); m = u.module_from_spec(s); s.loader.exec_module(m); print(m.command())"
