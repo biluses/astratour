@@ -99,6 +99,16 @@ class WorkerContracts(unittest.TestCase):
             (Path(directory) / 'cpu.cfs_quota_us').write_text('-1\n')
             self.assertEqual(worker.cpu_quota(missing, Path(directory)), worker.os.cpu_count() or 1)
 
+    def test_training_percent_reads_last_ns_train_step(self):
+        with tempfile.TemporaryDirectory() as directory:
+            log = Path(directory) / 'private-process.log'
+            self.assertIsNone(worker.training_percent(log))
+            log.write_bytes(b'Step 1400: 5753 GSs pruned.\n')
+            self.assertIsNone(worker.training_percent(log))
+            log.write_bytes(b'x' * 8000 + b'\n1380 (4.60%)   28.9 ms   13 m, 47 s   66.71 M\r\n'
+                            b'9940 (33.13%)   30.0 ms   10 m, 3 s   50.29 M\r')
+            self.assertEqual(worker.training_percent(log), 33.13)
+
     def test_sog_falls_back_to_cpu_only_for_gpu_encoder_failures(self):
         later = worker.time.monotonic() + 600
         self.assertTrue(worker.cpu_fallback_allowed(worker.JobError('SOG_GPU_FAILED'), later))

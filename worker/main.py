@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import signal
@@ -169,7 +170,18 @@ def cpu_fallback_allowed(error, deadline):
     return error.code in ('SOG_GPU_FAILED', 'PROCESS_TIMEOUT') and time.monotonic() < deadline
 
 
-def run_command(arguments, timeout, lease, work, deadline, max_disk, failure_code='PROCESS_FAILED'):
+def training_percent(log):
+    """Last step percentage ns-train printed ("1390 (4.63%) 28.6 ms ..."), or None."""
+    try:
+        with log.open('rb') as handle:
+            handle.seek(max(0, log.stat().st_size - 4096))
+            matches = re.findall(rb'(?:^|[\r\n])[ \t]*\d+ \((\d+(?:\.\d+)?)%\)', handle.read())
+    except OSError:
+        return None
+    return min(100.0, float(matches[-1])) if matches else None
+
+
+def run_command(arguments, timeout, lease, work, deadline, max_disk, failure_code='PROCESS_FAILED', progress=None):
     """Kill the entire subprocess group on a timeout, expired lease or disk bound."""
     # Child applications do not need the API or Blob credentials (only bridge does).
     environment = dict(os.environ)
@@ -197,6 +209,11 @@ def run_command(arguments, timeout, lease, work, deadline, max_disk, failure_cod
                     if total > max_disk or shutil.disk_usage(work).free < 2 * 1024**3:
                         raise JobError('DISK_LIMIT')
                     next_disk_check = now + 15
+                    # Training is ~15 min of a single stage: map its step percentage onto (low, high).
+                    percent = training_percent(log) if progress else None
+                    if percent is not None:
+                        low, high = progress
+                        lease.set(int(low + (high - low) * percent / 100), lease.stage)
                 time.sleep(1)
             if process.returncode:
                 raise JobError(failure_code)
@@ -259,8 +276,8 @@ def execute_job(api, job):
         with tempfile.TemporaryDirectory(prefix=f"job-{job['id']}-", dir=workspace) as temp:
             work = Path(temp)
             deadline = time.monotonic() + bounded_int('WORKER_JOB_TIMEOUT_SECONDS', 14400, 60, 14400)
-            def run(args, timeout=1800, failure_code='PROCESS_FAILED'):
-                run_command(args, timeout, lease, work, deadline, max_disk, failure_code)
+            def run(args, timeout=1800, failure_code='PROCESS_FAILED', progress=None):
+                run_command(args, timeout, lease, work, deadline, max_disk, failure_code, progress)
             raw, normalized, dataset, trained, exported, delivery = [work / name for name in ('raw', 'normalized', 'dataset', 'trained', 'exported', 'delivery')]
             for folder in (raw, normalized, delivery):
                 folder.mkdir()
@@ -292,7 +309,7 @@ def execute_job(api, job):
             run(['ns-train', 'splatfacto', '--data', dataset, '--output-dir', trained,
                  '--experiment-name', 'astratour', '--timestamp', 'run', '--vis', 'tensorboard',
                  '--max-num-iterations', str(iterations), '--pipeline.datamanager.cache-images', 'cpu', '--pipeline.datamanager.cache-images-type', 'uint8'],
-                bounded_int('WORKER_TRAIN_TIMEOUT_SECONDS', 7200, 60, 10800))
+                bounded_int('WORKER_TRAIN_TIMEOUT_SECONDS', 7200, 60, 10800), progress=(30, 74))
             configs = list(trained.rglob('config.yml'))
             if len(configs) != 1:
                 raise JobError('TRAINING_OUTPUT_INVALID')
