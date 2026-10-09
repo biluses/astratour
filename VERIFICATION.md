@@ -22,6 +22,22 @@ Corte: **20 de septiembre de 2026**. Las comprobaciones sintéticas no acreditan
 | APIs desplegadas sin sesión | Modelo, visor, ZIP, worker y mantenimiento devuelven 401; webhook sin firma 400 |
 | Gate de GPU remoto | Worker autenticado rechazado con 503 mientras la reconstrucción está deshabilitada |
 
+## Actualización 09/10/2026
+
+Integrado en `main` (`c1c89ed`): #1 reducción a 2048 px antes de subir, #2 disparo de Runpod Serverless, #4 Vercel Web Analytics, #7 marcado y retirada de fotos que bloquean, #8 aviso de desenfoque recalibrado, #9 dependencias. #3 y #6 se cerraron por duplicados.
+
+| Comprobación ejecutada | Resultado |
+|---|---|
+| `npm run check` | TypeScript; 57 Vitest; 21 tests del worker |
+| `npm run build`, `test:ui`, `test:viewer` | Correctos en local (Chromium); CI `verify` verde en `main` |
+| `npm audit` app y worker | 0 vulnerabilidades altas (next 15.5.27, sharp 0.35.5, source-map-js 1.2.2) |
+| Captura real de móvil en Chromium | 41 fotos de iPhone 7: 5 horizontales marcadas y retirables con un botón; análisis ~21 s en escritorio |
+| Aviso de desenfoque | 0/108 nítidas avisadas; 2 px a resolución del worker: 108/108 (ver docs/CAPTURE.md) |
+| Reducción de subida | 41 JPEG 168 → 42 MB; 67 PNG 295 → 18 MB; límite de 10 MB aplicado al archivo reducido |
+| Vercel | Despliegues de `main` correctos tras cada fusión. No se ha abierto la web pública desde este entorno |
+
+Pendiente, sin verificar: Safari de iPhone (análisis, avisos y tiempo de selección); Google OAuth de extremo a extremo; subida a Blob, GPU y pago con credenciales reales; imagen del worker (#5) en GPU (arranque, ms/paso, SOG en GPU); endpoint de Runpod Serverless y `after()` en Vercel; activar Web Analytics en el panel de Vercel.
+
 ## Qué se prueba y qué no
 
 Los tests SQL usan el esquema real y PGlite. Se ejercitan separación de propietarios, descarga/modelo/visor bloqueados antes de pago, origen de solicitudes, archivos privados, token de worker, jobs únicos, leases expirados, publicación atómica e idempotencia de Stripe. Las firmas de Stripe se verifican con el SDK; las sesiones son fixtures y las llamadas remotas de Checkout/Blob se sustituyen por mocks.
