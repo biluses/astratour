@@ -1,16 +1,36 @@
 # Prebuilt Runpod worker image: same stack as runpod-once.sh, installed at build time.
 # Keeps the base CMD (/start.sh: Jupyter, SSH, web terminal). Pod start command:
 #   bash -c "nohup /opt/astratour/run-once.sh > /workspace/worker.log 2>&1 & exec /start.sh"
+FROM runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404 AS colmap
+
+# Ubuntu's colmap package has no CUDA: SIFT extraction and exhaustive matching ran on the CPU
+# (~6.5 min for 60 photos on an RTX 4090 pod, GPU at 0 %). Same version (3.9.1), built with CUDA.
+RUN apt-get update -qq \
+    && apt-get install -y -qq git cmake ninja-build build-essential libboost-program-options-dev \
+       libboost-filesystem-dev libboost-graph-dev libboost-system-dev libeigen3-dev libflann-dev \
+       libfreeimage-dev libmetis-dev libgoogle-glog-dev libgtest-dev libsqlite3-dev libglew-dev \
+       libcgal-dev libceres-dev libgl1-mesa-dev > /dev/null \
+    && rm -rf /var/lib/apt/lists/*
+RUN git clone -q --depth 1 --branch 3.9.1 https://github.com/colmap/colmap.git /tmp/colmap \
+    && cmake -S /tmp/colmap -B /tmp/colmap/build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+       -DCMAKE_INSTALL_PREFIX=/opt/colmap -DGUI_ENABLED=OFF -DTESTS_ENABLED=OFF \
+       -DCUDA_ENABLED=ON -DCMAKE_CUDA_ARCHITECTURES="86;89;90;120" \
+    && cmake --build /tmp/colmap/build -j 4 \
+    && cmake --install /tmp/colmap/build \
+    && rm -rf /tmp/colmap
+
 FROM runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404 AS runtime
 
+# The apt package stays for its runtime libraries; /opt/colmap/bin comes first in PATH.
 RUN apt-get update -qq \
     && apt-get install -y -qq colmap libegl1 libgl1 libvulkan1 xvfb git curl xz-utils > /dev/null \
     && rm -rf /var/lib/apt/lists/*
 RUN curl -fsSL https://nodejs.org/dist/v22.22.2/node-v22.22.2-linux-x64.tar.xz | tar -xJ -C /opt
+COPY --from=colmap /opt/colmap /opt/colmap
 
 # Venv outside /workspace, which Runpod may mount as a volume. torch is pinned to the base image's
 # 2.8.0+cu128: unpinned, --ignore-installed pulls a cu13 torch that cannot build gsplat with nvcc 12.8.
-ENV PATH=/opt/ns/bin:/opt/node-v22.22.2-linux-x64/bin:$PATH
+ENV PATH=/opt/colmap/bin:/opt/ns/bin:/opt/node-v22.22.2-linux-x64/bin:$PATH
 RUN python3 -m venv --system-site-packages /opt/ns \
     && pip install --no-cache-dir -q --ignore-installed blinker nerfstudio==1.1.5 torch==2.8.0 torchvision==0.23.0 \
     && pip install --no-cache-dir -q setuptools wheel ninja runpod==1.12.0
@@ -44,6 +64,6 @@ RUN set -eux; \
     so=$(python -c "import gsplat.csrc; print(gsplat.csrc.__file__)"); \
     elfs=$(cuobjdump --list-elf "$so"); \
     for arch in sm_86 sm_89 sm_90 sm_120; do echo "$elfs" | grep -q "$arch"; done; \
-    colmap help > /dev/null; node --version; command -v ns-train xvfb-run runpodctl; \
+    test "$(command -v colmap)" = /opt/colmap/bin/colmap; colmap help | grep -q 'with CUDA'; node --version; command -v ns-train xvfb-run runpodctl; \
     test -x /opt/astratour/run-once.sh; test -d /opt/astratour/worker/node_modules/@vercel/blob; \
     python -c "import importlib.util as u; s = u.spec_from_file_location('h', '/opt/astratour/worker/serverless_handler.py'); m = u.module_from_spec(s); s.loader.exec_module(m); print(m.command())"
