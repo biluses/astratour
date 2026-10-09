@@ -23,6 +23,7 @@
   "dependencies": {
     "@neondatabase/serverless": "1.1.0",
     "@playcanvas/supersplat-viewer": "1.31.2",
+    "@vercel/analytics": "^2.0.1",
     "@vercel/blob": "2.8.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
