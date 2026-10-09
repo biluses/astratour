@@ -8,6 +8,10 @@ export const ANALYSIS_LONG_SIDE_PX = 1024; // photos are measured on a copy down
 // scenes (bark vs. an object on a table), the ratio does not: blur removes fine detail first. See docs/CAPTURE.md.
 export const BLUR_WARN_THRESHOLD = 0.2;
 export const DARK_WARN_THRESHOLD = 40; // provisional: mean luminance, 0-255.
+// Uploads are downscaled to this long side: the worker already normalizes every photo to 2048 px before COLMAP
+// (worker/images.py), so this only cuts upload size (~4x on 12 MP phone JPEGs). Infinity uploads JPEG originals.
+export const UPLOAD_LONG_SIDE_PX = 2048;
+export const UPLOAD_JPEG_QUALITY = 0.9;
 
 export interface PhotoAnalysis { name: string; width: number; height: number; sha256: string; sharpness: number; luminance: number }
 export type CaptureAnalysis = PhotoAnalysis | { name: string; unreadable: true };
@@ -124,25 +128,54 @@ export function flagBlockingPhotos(results: CaptureAnalysis[]): number[] {
   return flagged;
 }
 
-/** Draws the bitmap with its long side at `longSide` px (never upscaled) and returns luma. */
-function grayAt(bitmap: ImageBitmap, longSide: number) {
-  const scale = Math.min(1, longSide / Math.max(bitmap.width, bitmap.height));
-  const w = Math.max(1, Math.round(bitmap.width * scale));
-  const h = Math.max(1, Math.round(bitmap.height * scale));
+/** Size with the long side at most `longSide` (never upscaled). Deterministic: one camera, one output size. */
+export function fitSize(width: number, height: number, longSide: number) {
+  const scale = Math.min(1, longSide / Math.max(width, height));
+  return { w: Math.max(1, Math.round(width * scale)), h: Math.max(1, Math.round(height * scale)) };
+}
+
+/** JPEGs already within the upload size pass through byte-for-byte; everything else is re-encoded as JPEG. */
+export function needsReencode(type: string, width: number, height: number): boolean {
+  return type !== 'image/jpeg' || Math.max(width, height) > UPLOAD_LONG_SIDE_PX;
+}
+
+export function uploadName(name: string): string {
+  return `${name.replace(/\.[^.]*$/, '')}.jpg`;
+}
+
+/** Draws the bitmap with its long side at `longSide` px (never upscaled). */
+function drawAt(bitmap: ImageBitmap, longSide: number) {
+  const { w, h } = fitSize(bitmap.width, bitmap.height, longSide);
   const context = typeof OffscreenCanvas !== 'undefined'
     ? new OffscreenCanvas(w, h).getContext('2d')
     : Object.assign(document.createElement('canvas'), { width: w, height: h }).getContext('2d');
   if (!context) throw new Error('Canvas 2D unavailable');
   context.imageSmoothingQuality = 'high';
   context.drawImage(bitmap, 0, 0, w, h);
+  return { context, w, h };
+}
+
+function toJpeg(canvas: OffscreenCanvas | HTMLCanvasElement): Promise<Blob> {
+  if ('convertToBlob' in canvas) return canvas.convertToBlob({ type: 'image/jpeg', quality: UPLOAD_JPEG_QUALITY });
+  return new Promise((resolve, reject) => canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error('JPEG encode failed')),
+    'image/jpeg', UPLOAD_JPEG_QUALITY));
+}
+
+/** Luma of the bitmap drawn with its long side at `longSide` px. */
+function grayAt(bitmap: ImageBitmap, longSide: number) {
+  const { context, w, h } = drawAt(bitmap, longSide);
   const rgba = context.getImageData(0, 0, w, h).data;
   const gray = new Float32Array(w * h);
   for (let i = 0; i < gray.length; i++) gray[i] = 0.299 * rgba[i * 4] + 0.587 * rgba[i * 4 + 1] + 0.114 * rgba[i * 4 + 2];
   return { gray, w, h };
 }
 
-/** Browser-only: decodes with EXIF orientation applied and measures a 1024 px downscaled copy. */
-export async function analyzeFile(file: File): Promise<PhotoAnalysis> {
+/**
+ * Browser-only: decodes once with EXIF orientation applied, measures a 1024 px copy and prepares the file to
+ * upload (2048 px JPEG). The analysis always describes the original (dimensions, SHA-256). Re-encoded uploads
+ * carry no EXIF (no GPS); pass-through JPEGs keep it until the worker strips it on normalization.
+ */
+export async function analyzeFile(file: File): Promise<{ analysis: PhotoAnalysis; upload: File }> {
   const [bitmap, digest] = await Promise.all([
     createImageBitmap(file, { imageOrientation: 'from-image' }),
     file.arrayBuffer().then(buffer => crypto.subtle.digest('SHA-256', buffer)),
@@ -150,7 +183,10 @@ export async function analyzeFile(file: File): Promise<PhotoAnalysis> {
   try {
     const { gray, w, h } = grayAt(bitmap, ANALYSIS_LONG_SIDE_PX);
     const sha256 = Array.from(new Uint8Array(digest), b => b.toString(16).padStart(2, '0')).join('');
-    return { name: file.name, width: bitmap.width, height: bitmap.height, sha256,
+    const analysis = { name: file.name, width: bitmap.width, height: bitmap.height, sha256,
       sharpness: sharpness(gray, w, h), luminance: meanLuminance(gray) };
+    if (!needsReencode(file.type, bitmap.width, bitmap.height)) return { analysis, upload: file };
+    const blob = await toJpeg(drawAt(bitmap, UPLOAD_LONG_SIDE_PX).context.canvas);
+    return { analysis, upload: new File([blob], uploadName(file.name), { type: 'image/jpeg', lastModified: file.lastModified }) };
   } finally { bitmap.close(); }
 }

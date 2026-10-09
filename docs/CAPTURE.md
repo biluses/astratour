@@ -16,6 +16,8 @@
 - **Avisan:** fotos que el navegador no puede analizar, lado corto < 1080 px, nitidez < 0,20 (posible desenfoque: varianza del laplaciano de la copia de 1024 px dividida por la de su mitad promediada 2×2; calibrado, ver Evidencia), luminancia media < 40/255 (una foto oscura no se marca además como desenfocada), menos de 60 fotos (recomendado).
 - Iluminación consistente, imágenes nítidas y escena estática. Evitar basar la captura en espejos y reflejos.
 
+**Subida:** al seleccionarlas, las fotos se reducen en el navegador a 2048 px de lado largo (JPEG calidad 0,9). Es la misma resolución a la que el worker normaliza antes de COLMAP, así que no se pierde detalle. Las comprobaciones usan siempre el original. El límite de 10 MB por foto se aplica al archivo ya reducido. Si alguna foto no se puede preparar, se suben todos los originales para no mezclar tamaños. Las fotos reducidas pierden el EXIF (también el GPS); las que ya medían 2048 px o menos se suben tal cual y el worker borra sus metadatos. Medido en Chromium (09/10/2026): 41 JPEG de iPhone 7 pasan de 168 a 42 MB y 67 PNG de 2736×1540, de 295 a 18 MB. La selección de las 41 fotos tarda 21 s en lugar de 12 s; en móvil está sin medir.
+
 La [guía de PlayCanvas](https://developer.playcanvas.com/user-manual/gaussian-splatting/creating/taking-photos/) describe estas condiciones y orienta a cientos de fotos para escenas grandes. El pipeline actual no admite vídeo ni HEIC directamente.
 
 ## Diagnóstico local sin costes de nube
