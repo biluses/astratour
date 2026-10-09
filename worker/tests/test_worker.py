@@ -90,7 +90,14 @@ class WorkerContracts(unittest.TestCase):
             self.assertEqual(worker.cpu_quota(limit), 13)
             limit.write_text('max 100000\n')
             self.assertEqual(worker.cpu_quota(limit), worker.os.cpu_count() or 1)
-            self.assertEqual(worker.cpu_quota(Path(directory) / 'missing'), worker.os.cpu_count() or 1)
+            missing = Path(directory) / 'missing'
+            self.assertEqual(worker.cpu_quota(missing, missing), worker.os.cpu_count() or 1)
+            # cgroup v1 hosts (no cpu.max): 10.2 CPUs seen on a Runpod RTX 4090 pod.
+            (Path(directory) / 'cpu.cfs_quota_us').write_text('1020000\n')
+            (Path(directory) / 'cpu.cfs_period_us').write_text('100000\n')
+            self.assertEqual(worker.cpu_quota(missing, Path(directory)), 10)
+            (Path(directory) / 'cpu.cfs_quota_us').write_text('-1\n')
+            self.assertEqual(worker.cpu_quota(missing, Path(directory)), worker.os.cpu_count() or 1)
 
     def test_sog_falls_back_to_cpu_only_for_gpu_encoder_failures(self):
         later = worker.time.monotonic() + 600

@@ -146,13 +146,20 @@ class Lease:
         self.thread.join(timeout=35)
 
 
-def cpu_quota(path=Path('/sys/fs/cgroup/cpu.max')):
-    """CPUs the container may use. Pods expose every host core (128) but cap usage via cgroups."""
+def cpu_quota(path=Path('/sys/fs/cgroup/cpu.max'), v1_dir=Path('/sys/fs/cgroup/cpu')):
+    """CPUs the container may use. Pods expose every host core (64-128) but cap usage via cgroups (v2 or v1)."""
     try:
         quota, period = path.read_text().split()[:2]
-        if quota != 'max':
-            return max(1, int(int(quota) / int(period)))
     except (OSError, ValueError):
+        try:
+            quota = (v1_dir / 'cpu.cfs_quota_us').read_text().strip()
+            period = (v1_dir / 'cpu.cfs_period_us').read_text().strip()
+        except OSError:
+            quota = period = 'max'
+    try:
+        if quota not in ('max', '-1'):
+            return max(1, int(int(quota) / int(period)))
+    except ValueError:
         pass
     return os.cpu_count() or 1
 
