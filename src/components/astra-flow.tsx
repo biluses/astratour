@@ -11,7 +11,8 @@ import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
-import { createTourSchema, MAX_FILE_BYTES, MAX_FILES, MAX_TOTAL_BYTES, RECOMMENDED_CAPTURE_FILES, type TourView } from '@/lib/contracts';
+import { createTourSchema, MARBLE_MAX_PHOTOS, MARBLE_MIN_PHOTOS, MAX_FILE_BYTES, MAX_FILES, MAX_TOTAL_BYTES, RECOMMENDED_CAPTURE_FILES,
+  type RoomStatus, type TourEngine, type TourView } from '@/lib/contracts';
 import { analyzeFile, summarize, type CaptureAnalysis } from '@/lib/capture-checks';
 import { cn } from '@/lib/utils';
 
@@ -27,12 +28,20 @@ interface Props {
   paymentsReady: boolean;
   reconstructionReady: boolean;
   minimumImages: number;
+  marbleReady: boolean;
+  marbleMaxRooms: number;
   checkoutReturn: 'success' | 'cancelled' | null;
 }
 type Job = { tourId: string; uploads: { imageId: string; pathname: string }[]; completed: Set<string> };
 type Busy = 'analyze' | 'upload' | 'process' | 'checkout' | 'signin' | null;
+type RoomDraft = { key: number; name: string; files: File[] };
+const ROOM_LABELS: Record<RoomStatus, string> = {
+  queued: 'En cola', generating: 'Generando…', finalizing: 'Guardando…', completed: 'Lista', failed: 'No se pudo generar',
+};
+const firstRoom = (): RoomDraft[] => [{ key: 0, name: 'Estancia 1', files: [] }];
 
 function reconstructionError(tour: TourView) {
+  if (tour.engine === 'marble') return 'No se ha podido generar ninguna estancia. Haz las fotos desde el centro de cada estancia, girando sobre ti mismo, y crea una nueva propiedad.';
   const messages: Record<string, string> = {
     CAPTURE_INVALID_IMAGES: 'La captura contiene imágenes no válidas o con resoluciones/orientaciones incompatibles. Usa los originales de la misma cámara, sin recortes, en una orientación constante.',
     INSUFFICIENT_CAMERA_REGISTRATION: 'No se han podido conectar suficientes fotos de la escena. Repite la captura con más solapamiento y fotografías intermedias entre posiciones.',
@@ -81,10 +90,12 @@ function Step({ number, title, description, completed, active, right, children }
   </Card>;
 }
 
-export function AstraFlow({ user, initialTour, initialError, accessReady, paymentsReady, reconstructionReady, minimumImages, checkoutReturn }: Props) {
+export function AstraFlow({ user, initialTour, initialError, accessReady, paymentsReady, reconstructionReady, minimumImages, marbleReady, marbleMaxRooms, checkoutReturn }: Props) {
   const [tour, setTour] = useState(initialTour);
   const [files, setFiles] = useState<File[]>([]);
-  const [thumbnails, setThumbnails] = useState<string[]>([]);
+  const [engine, setEngine] = useState<TourEngine>(marbleReady && !reconstructionReady ? 'marble' : 'gsplat');
+  const [rooms, setRooms] = useState(firstRoom);
+  const [thumbnails, setThumbnails] = useState(() => new Map<File, string>());
   const [analyses] = useState(() => new WeakMap<File, CaptureAnalysis>());
   const [prepared] = useState(() => new WeakMap<File, File>()); // original -> 2048 px JPEG (or itself)
   // All-or-nothing: one unprepared photo would mix original and downscaled sizes from one camera.
@@ -92,7 +103,16 @@ export function AstraFlow({ user, initialTour, initialError, accessReady, paymen
   // map, not flatMap: checks.flagged holds indices into files.
   const checks = useMemo(() => summarize(files.map(f => analyses.get(f) ?? { name: f.name, unreadable: true as const }), minimumImages), [files, analyses, minimumImages]);
   const flagged = useMemo(() => new Set(checks.flagged), [checks]);
-  const [title, setTitle] = useState('');
+  const mode = tour?.engine ?? engine; // an existing tour keeps its engine
+  const marbleMode = mode === 'marble';
+  const engineReady = marbleMode ? marbleReady : reconstructionReady;
+  // Flat upload order (rooms, then photos): the server reserves upload paths in this same order.
+  const selected = useMemo(() => marbleMode ? rooms.flatMap(room => room.files) : files, [marbleMode, rooms, files]);
+  const roomChecks = useMemo(() => rooms.map(room => summarize(room.files.map(f => analyses.get(f) ?? { name: f.name, unreadable: true as const }), 0, 'marble')),
+    [rooms, analyses]);
+  const blocked = marbleMode
+    ? rooms.some((room, i) => !room.name.trim() || !room.files.length || roomChecks[i].blocking.length > 0)
+    : checks.blocking.length > 0;  const [title, setTitle] = useState('');
   const [error, setError] = useState(initialError);
   const [busy, setBusy] = useState<Busy>(null);
   const [dragging, setDragging] = useState(false);
@@ -112,10 +132,10 @@ export function AstraFlow({ user, initialTour, initialError, accessReady, paymen
   const canSelect = Boolean(user) && !busy && !reconstructing && !job.current && !previewReady;
 
   useEffect(() => {
-    const urls = files.map(f => URL.createObjectURL(f));
+    const urls = new Map(selected.map(f => [f, URL.createObjectURL(f)]));
     setThumbnails(urls);
     return () => urls.forEach(url => URL.revokeObjectURL(url));
-  }, [files]);
+  }, [selected]);
 
   useEffect(() => {
     if (user && !initialTour) uploadSection.current?.scrollIntoView({ block: 'center' });
@@ -165,16 +185,7 @@ export function AstraFlow({ user, initialTour, initialError, accessReady, paymen
     }
     setError(null); setBusy('analyze'); setProgress(0);
     try {
-      // ponytail: sequential decode bounds memory with hundreds of 12-48 MP photos; add a small pool if it proves slow.
-      for (const [index, file] of incoming.entries()) {
-        if (!analyses.has(file)) {
-          try {
-            const { analysis, upload } = await analyzeFile(file);
-            analyses.set(file, analysis); prepared.set(file, upload);
-          } catch { analyses.set(file, { name: file.name, unreadable: true }); }
-        }
-        setProgress((index + 1) / incoming.length * 100);
-      }
+      await analyze(incoming);
       if (!createTourSchema.safeParse(describe(uploadBodies(next))).success) {
         setError(`Cada foto puede ocupar como máximo 10 MB una vez preparada para subir, y ${Math.round(MAX_TOTAL_BYTES / 1024 ** 3)} GB en total. Usa JPG o PNG originales de la cámara.`);
         return;
@@ -183,28 +194,69 @@ export function AstraFlow({ user, initialTour, initialError, accessReady, paymen
     } finally { setBusy(null); }
   }
 
+  async function analyze(incoming: File[], alwaysReencode = false) {
+    // ponytail: sequential decode bounds memory with hundreds of 12-48 MP photos; add a small pool if it proves slow.
+    for (const [index, file] of incoming.entries()) {
+      if (!analyses.has(file)) {
+        try {
+          const { analysis, upload } = await analyzeFile(file, alwaysReencode);
+          analyses.set(file, analysis); prepared.set(file, upload);
+        } catch { analyses.set(file, { name: file.name, unreadable: true }); }
+      }
+      setProgress((index + 1) / incoming.length * 100);
+    }
+  }
+
+  async function addRoomPhotos(key: number, incoming: File[]) {
+    const room = rooms.find(r => r.key === key);
+    if (!canSelect || !room || !incoming.length) return;
+    if (incoming.some(f => f.type !== 'image/jpeg' && f.type !== 'image/png') || room.files.length + incoming.length > MARBLE_MAX_PHOTOS) {
+      setError(`Cada estancia admite hasta ${MARBLE_MAX_PHOTOS} fotos JPG o PNG.`);
+      return;
+    }
+    setError(null); setBusy('analyze'); setProgress(0);
+    try {
+      // Always re-encoded: strips EXIF (location) before the photos reach World Labs. The azimuth is read first.
+      await analyze(incoming, true);
+      if (incoming.some(f => (prepared.get(f) ?? f).size > MAX_FILE_BYTES)) {
+        setError('Cada foto puede ocupar como máximo 10 MB una vez preparada para subir.');
+        return;
+      }
+      setRooms(list => list.map(r => r.key === key ? { ...r, files: [...r.files, ...incoming] } : r));
+    } finally { setBusy(null); }
+  }
+
+  function updateRoom(key: number, change: (room: RoomDraft) => RoomDraft) {
+    setRooms(list => list.map(r => r.key === key ? change(r) : r));
+  }
+
   async function process(id: string) {
     setBusy('process');
     const next = await api<TourView>(`/api/tours/${id}/process`, { method: 'POST' });
-    setTour(next); setFiles([]); job.current = null;
+    setTour(next); setFiles([]); setRooms(firstRoom()); job.current = null;
     previewSection.current?.scrollIntoView({ block: 'start' });
   }
 
   async function generate() {
-    if (!user || busy || reconstructing || !reconstructionReady) return;
-    if (files.length && checks.blocking.length) return;
-    if (files.length && files.length < minimumImages) { setError(`Para reconstruir una escena necesitas al menos ${minimumImages} fotos solapadas. La calidad depende de la captura.`); return; }
+    if (!user || busy || reconstructing || !engineReady) return;
+    if (selected.length && blocked) return;
+    if (!marbleMode && files.length && files.length < minimumImages) { setError(`Para reconstruir una escena necesitas al menos ${minimumImages} fotos solapadas. La calidad depende de la captura.`); return; }
     setError(null); setNotice(null);
     try {
-      if (files.length) {
+      if (selected.length) {
         setBusy('upload'); setProgress(0);
-        const bodies = uploadBodies(files);
+        const bodies = uploadBodies(selected);
         if (!job.current) {
-          const created = await api<Omit<Job, 'completed'>>('/api/tours', { method: 'POST', body: JSON.stringify({
+          const describe = (f: File) => ({ name: (prepared.get(f) ?? f).name, size: (prepared.get(f) ?? f).size, type: (prepared.get(f) ?? f).type });
+          const azimuth = (f: File) => { const a = analyses.get(f); return a && 'azimuth' in a ? a.azimuth : null; };
+          const created = await api<Omit<Job, 'completed'>>('/api/tours', { method: 'POST', body: JSON.stringify(marbleMode ? {
+            engine: 'marble', title: title.trim() || 'Mi propiedad',
+            rooms: rooms.map(room => ({ name: room.name.trim(), files: room.files.map(f => ({ ...describe(f), azimuth: azimuth(f) })) })),
+          } : {
             title: title.trim() || 'Mi propiedad', files: bodies.map(f => ({ name: f.name, size: f.size, type: f.type })),
           }) });
           job.current = { ...created, completed: new Set() };
-          setTour({ id: created.tourId, title: title.trim() || 'Mi propiedad', status: 'borrador', simulated: false, images: [], modelUrl: null });
+          setTour({ id: created.tourId, title: title.trim() || 'Mi propiedad', status: 'borrador', engine: mode, simulated: false, images: [], modelUrl: null });
           window.history.replaceState(null, '', `/?tour=${created.tourId}`);
         }
         const currentJob = job.current;
@@ -215,7 +267,7 @@ export function AstraFlow({ user, initialTour, initialError, accessReady, paymen
             await upload(descriptor.pathname, bodies[index], {
               access: 'private', handleUploadUrl: '/api/upload',
               clientPayload: JSON.stringify({ tourId: currentJob.tourId, imageId: descriptor.imageId }),
-              onUploadProgress: ({ percentage }) => setProgress((index + percentage / 100) / files.length * 100),
+              onUploadProgress: ({ percentage }) => setProgress((index + percentage / 100) / selected.length * 100),
             });
           } catch (uploadError) {
             // A network error may arrive after Blob persisted the file. Confirm exact
@@ -249,7 +301,7 @@ export function AstraFlow({ user, initialTour, initialError, accessReady, paymen
 
   function startNew() {
     if (busy) return;
-    setTour(null); setFiles([]); setTitle(''); setError(null); setNotice(null); setPaymentWaiting(false); setProgress(0);
+    setTour(null); setFiles([]); setRooms(firstRoom()); setTitle(''); setError(null); setNotice(null); setPaymentWaiting(false); setProgress(0);
     job.current = null;
     window.history.replaceState(null, '', '/');
     uploadSection.current?.scrollIntoView({ block: 'center' });
@@ -303,13 +355,45 @@ export function AstraFlow({ user, initialTour, initialError, accessReady, paymen
 
         <section id="step-2" ref={uploadSection} aria-label="Paso 2: Imágenes">
           <Step number={2} title="Dale vida a tus imágenes" description="Captura una única propiedad desde distintas posiciones y con solapamiento." active={Boolean(user) && !previewReady} completed={Boolean(previewReady)}
-            right={<Badge className="shrink-0">{files.length || tour?.images.length || 0} / {MAX_FILES} fotos</Badge>}>
-            {!reconstructionReady ? <p role="status" className="mb-5 rounded-lg border border-primary/20 bg-primary/5 p-4 text-sm">El servidor de reconstrucción todavía no está activado. Puedes conectar tu cuenta; la generación permanecerá deshabilitada hasta que el motor esté operativo.</p> : null}
+            right={<Badge className="shrink-0">{marbleMode ? `${tour?.rooms?.length || rooms.length} / ${marbleMaxRooms} estancias` : `${files.length || tour?.images.length || 0} / ${MAX_FILES} fotos`}</Badge>}>
+            {!reconstructionReady && !marbleReady ? <p role="status" className="mb-5 rounded-lg border border-primary/20 bg-primary/5 p-4 text-sm">El servidor de reconstrucción todavía no está activado. Puedes conectar tu cuenta; la generación permanecerá deshabilitada hasta que el motor esté operativo.</p> : null}
             {tour?.status === 'error' ? <p role="alert" className="mb-5 rounded-lg border border-red-400/30 p-4 text-sm">{reconstructionError(tour)} No se ha realizado ningún cargo.</p> : null}
             {!previewReady ? <>
               <label htmlFor="property-title" className="mb-2 block text-sm text-muted-foreground">Nombre de la propiedad <span className="text-xs">(opcional)</span></label>
               <input id="property-title" value={title} onChange={e => setTitle(e.target.value)} disabled={!canSelect} maxLength={120}
                 placeholder="Ej. Ático en Chamberí" className="mb-5 h-11 w-full rounded-lg border border-border bg-background px-3 text-sm placeholder:text-muted-foreground/60 disabled:opacity-50" />
+              {marbleReady && !tour ? <div role="radiogroup" aria-label="Tipo de tour" className="mb-5 grid gap-2 sm:grid-cols-2">
+                {([['marble', 'Por estancias', `${MARBLE_MIN_PHOTOS}–${MARBLE_MAX_PHOTOS} fotos desde el centro de cada estancia`, marbleReady],
+                  ['gsplat', 'Escaneo completo', `Mínimo ${minimumImages} fotos solapadas de toda la propiedad`, reconstructionReady]] as const).map(([value, label, hint, ready]) =>
+                  <button key={value} type="button" role="radio" aria-checked={engine === value} disabled={!canSelect || !ready} onClick={() => setEngine(value)}
+                    className={cn('rounded-xl border border-border bg-background p-4 text-left text-sm transition-colors disabled:opacity-50', engine === value && 'border-primary bg-primary/8')}>
+                    <span className="font-medium">{label}</span><span className="mt-1 block text-xs text-muted-foreground">{hint}</span></button>)}
+              </div> : null}
+              {marbleMode ? <div className="space-y-3">
+                {rooms.map((room, r) => {
+                  const roomCheck = roomChecks[r];
+                  const roomFlagged = new Set(roomCheck.flagged);
+                  const canAdd = canSelect && room.files.length < MARBLE_MAX_PHOTOS;
+                  return <div key={room.key} className="rounded-xl border border-border bg-background p-4">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <input aria-label={`Nombre de la estancia ${r + 1}`} value={room.name} maxLength={60} disabled={!canSelect}
+                        onChange={e => updateRoom(room.key, x => ({ ...x, name: e.target.value }))}
+                        className="h-10 min-w-0 flex-1 rounded-lg border border-border bg-background px-3 text-sm disabled:opacity-50" />
+                      <Button asChild variant="outline" size="sm"><label aria-disabled={!canAdd} className={cn('cursor-pointer', !canAdd && 'pointer-events-none opacity-50')}><ImagePlus />Añadir fotos
+                        <input type="file" multiple accept="image/jpeg,image/png" disabled={!canAdd} className="sr-only" onChange={e => { void addRoomPhotos(room.key, Array.from(e.target.files ?? [])); e.target.value = ''; }} /></label></Button>
+                      {rooms.length > 1 && canSelect ? <Button variant="ghost" size="icon" aria-label={`Quitar ${room.name || `la estancia ${r + 1}`}`} onClick={() => setRooms(list => list.filter(x => x.key !== room.key))}><X /></Button> : null}
+                    </div>
+                    <p className="mt-2 text-xs text-muted-foreground">{room.files.length} / {MARBLE_MAX_PHOTOS} fotos · mínimo {MARBLE_MIN_PHOTOS}</p>
+                    {roomCheck.blocking.length ? <ul role="alert" className="mt-2 list-disc space-y-1 pl-5 text-sm leading-relaxed text-red-200">{roomCheck.blocking.map(m => <li key={m}>{m}</li>)}</ul> : null}
+                    {roomCheck.warnings.length ? <ul role="status" className="mt-2 list-disc space-y-1 pl-5 text-sm leading-relaxed text-amber-200">{roomCheck.warnings.map(m => <li key={m}>{m}</li>)}</ul> : null}
+                    {room.files.length ? <div className="mt-3 grid grid-cols-4 gap-2 sm:grid-cols-8">{room.files.map((file, i) => <div key={`${file.name}-${i}`} className={cn('relative aspect-square overflow-hidden rounded-lg border border-border', roomFlagged.has(i) && 'border-2 border-red-400')}>
+                      {thumbnails.get(file) ? <Image src={thumbnails.get(file)!} alt={roomFlagged.has(i) ? `${file.name} (marcada: corrígela o quítala)` : file.name} fill unoptimized className="object-cover" sizes="100px" /> : null}
+                      {canSelect ? <Button variant="secondary" size="icon" className="absolute right-1 top-1 size-6 bg-black/70" aria-label={`Quitar ${file.name}`} onClick={() => updateRoom(room.key, x => ({ ...x, files: x.files.filter((_, index) => index !== i) }))}><X className="size-3" /></Button> : null}
+                    </div>)}</div> : null}
+                  </div>;
+                })}
+                {canSelect && rooms.length < marbleMaxRooms ? <Button variant="outline" size="sm" onClick={() => setRooms(list => [...list, { key: Math.max(...list.map(x => x.key)) + 1, name: `Estancia ${list.length + 1}`, files: [] }])}><Plus />Añadir estancia</Button> : null}
+              </div> : <>
               <input ref={input} type="file" multiple accept="image/jpeg,image/png" disabled={!canSelect} className="sr-only" tabIndex={-1} aria-label="Seleccionar imágenes JPG o PNG" onChange={e => { void chooseFiles(Array.from(e.target.files ?? [])); e.target.value = ''; }} />
               <div role="button" aria-label="Arrastra imágenes o pulsa para seleccionarlas" aria-disabled={!canSelect} tabIndex={canSelect ? 0 : -1}
                 onClick={() => canSelect && input.current?.click()}
@@ -321,26 +405,31 @@ export function AstraFlow({ user, initialTour, initialError, accessReady, paymen
                 <p className="text-base font-medium">{user ? 'Arrastra tus fotos aquí' : 'Conecta tu cuenta para subir fotos'}</p>
                 <p className="mt-1.5 text-sm text-muted-foreground">{user ? <>o <span className="text-primary underline decoration-primary/40 underline-offset-4">selecciona archivos</span> desde tu dispositivo</> : 'Después podrás elegir las imágenes de tu propiedad.'}</p>
                 <p className="mt-4 font-mono text-xs text-muted-foreground">JPG / PNG · se reducen a 2048 px antes de subir</p>
-              </div>
+              </div></>}
               {busy === 'analyze' ? <p role="status" aria-live="polite" className="mt-4 flex items-center gap-2 text-sm text-muted-foreground"><LoaderCircle className="size-4 animate-spin text-primary" />Analizando fotos… {Math.round(progress)}%</p> : null}
+              {!marbleMode ? <>
               {checks.blocking.length ? <div role="alert" className="mt-4 rounded-xl border border-red-400/30 bg-red-400/8 p-4 text-sm leading-relaxed text-red-200"><p className="flex items-center gap-2 font-medium"><CircleAlert className="size-4 shrink-0" />Corrige esto antes de generar</p><ul className="mt-2 list-disc space-y-1 pl-6">{checks.blocking.map(m => <li key={m}>{m}</li>)}</ul>
                 {flagged.size && !job.current ? <Button variant="outline" size="sm" className="mt-3" disabled={Boolean(busy)} onClick={() => setFiles(v => v.filter((_, i) => !flagged.has(i)))}><X />Quitar {flagged.size === 1 ? 'la foto marcada' : `las ${flagged.size} fotos marcadas`}</Button> : null}</div> : null}
               {checks.warnings.length ? <div role="status" className="mt-4 rounded-xl border border-amber-400/30 bg-amber-400/8 p-4 text-sm leading-relaxed text-amber-200"><p className="flex items-center gap-2 font-medium"><CircleAlert className="size-4 shrink-0" />Revisa estas fotos</p><ul className="mt-2 list-disc space-y-1 pl-6">{checks.warnings.map(m => <li key={m}>{m}</li>)}</ul></div> : null}
               {files.length ? <div className="mt-4 grid grid-cols-3 gap-3 sm:grid-cols-6">{files.slice(0, 60).map((file, i) => <div key={`${file.name}-${i}`} className={cn('group relative aspect-square overflow-hidden rounded-lg border border-border bg-background', flagged.has(i) && 'border-2 border-red-400')}>
-                {thumbnails[i] ? <Image src={thumbnails[i]} alt={flagged.has(i) ? `${file.name} (marcada: corrígela o quítala)` : file.name} fill unoptimized className="object-cover" sizes="150px" /> : null}
+                {thumbnails.get(file) ? <Image src={thumbnails.get(file)!} alt={flagged.has(i) ? `${file.name} (marcada: corrígela o quítala)` : file.name} fill unoptimized className="object-cover" sizes="150px" /> : null}
                 {!job.current ? <Button variant="secondary" size="icon" className="absolute right-1 top-1 size-7 bg-black/70" aria-label={`Quitar ${file.name}`} disabled={Boolean(busy)} onClick={() => setFiles(v => v.filter((_, index) => index !== i))}><X className="size-3" /></Button> : null}
                 <span className={cn('absolute inset-x-0 bottom-0 truncate px-2 py-1 text-xs', flagged.has(i) ? 'bg-red-900/90' : 'bg-black/70')}>{file.name}</span>
               </div>)}</div> : null}
               {files.length > 60 ? <p className="mt-3 text-xs text-muted-foreground">Mostrando las primeras 60 miniaturas de {files.length} fotos seleccionadas.</p> : null}
-              <div className="mt-5 flex flex-wrap items-center justify-between gap-4"><p className="max-w-xl text-xs leading-relaxed text-muted-foreground">Mínimo {minimumImages} fotos; recomendamos {RECOMMENDED_CAPTURE_FILES}–80 por estancia. Cada zona debe salir en al menos 3 fotos: gira como máximo unos 20° entre tomas (un tercio del encuadre) y da un paso entre grupos de fotos en lugar de girar sobre ti mismo. Misma cámara, sin zoom y sin mezclar fotos verticales y horizontales. <Link href="/guia-captura" className="text-primary underline decoration-primary/40 underline-offset-4">Consulta la guía de captura</Link>.</p>
-                <Button onClick={() => void generate()} disabled={!user || isWorking || Boolean(busy) || !reconstructionReady || checks.blocking.length > 0 || (files.length ? files.length < minimumImages : !tour)}>
-                  {isWorking ? <LoaderCircle className="animate-spin" /> : <Sparkles />}{isWorking ? 'Procesando…' : tour && !files.length ? 'Reintentar generación' : 'Generar previsualización'}{!isWorking ? <ArrowRight /> : null}
+              </> : null}
+              <div className="mt-5 flex flex-wrap items-center justify-between gap-4">{marbleMode ? <p className="max-w-xl text-xs leading-relaxed text-muted-foreground">Ponte en el centro de la estancia y haz entre 5 y 8 fotos girando sobre ti mismo, solapando un poco cada foto. Vale el gran angular 0,5x.</p> : <p className="max-w-xl text-xs leading-relaxed text-muted-foreground">Mínimo {minimumImages} fotos; recomendamos {RECOMMENDED_CAPTURE_FILES}–80 por estancia. Cada zona debe salir en al menos 3 fotos: gira como máximo unos 20° entre tomas (un tercio del encuadre) y da un paso entre grupos de fotos en lugar de girar sobre ti mismo. Misma cámara, sin zoom y sin mezclar fotos verticales y horizontales. <Link href="/guia-captura" className="text-primary underline decoration-primary/40 underline-offset-4">Consulta la guía de captura</Link>.</p>}
+                <Button onClick={() => void generate()} disabled={!user || isWorking || Boolean(busy) || !engineReady || (selected.length ? blocked || (!marbleMode && files.length < minimumImages) : !tour || (marbleMode && tour.status === 'error'))}>
+                  {isWorking ? <LoaderCircle className="animate-spin" /> : <Sparkles />}{isWorking ? 'Procesando…' : tour && !selected.length ? 'Reintentar generación' : 'Generar previsualización'}{!isWorking ? <ArrowRight /> : null}
                 </Button></div>
-            </> : <div className="flex items-center justify-between gap-4 rounded-xl bg-background px-4 py-4"><div className="flex items-center gap-3"><ImagePlus className="size-5 text-primary" /><div><p className="text-sm font-medium">{tour?.title}</p><p className="mt-1 text-xs text-muted-foreground">{tour?.images.length} imágenes procesadas y guardadas</p></div></div><Check className="size-5 text-success" /></div>}
+            </> : <div className="flex items-center justify-between gap-4 rounded-xl bg-background px-4 py-4"><div className="flex items-center gap-3"><ImagePlus className="size-5 text-primary" /><div><p className="text-sm font-medium">{tour?.title}</p><p className="mt-1 text-xs text-muted-foreground">{tour?.rooms ? `${tour.rooms.filter(room => room.status === 'completed').length} de ${tour.rooms.length} estancias generadas` : `${tour?.images.length} imágenes procesadas y guardadas`}</p></div></div><Check className="size-5 text-success" /></div>}
             {isWorking ? <div className="mt-5 rounded-xl border border-primary/20 bg-primary/5 p-5" role="status" aria-live="polite">
-              <div className="flex items-center justify-between gap-2 text-sm"><p className="flex items-center gap-2"><Sparkles className="size-4 text-primary" />{busy === 'upload' ? 'Subiendo tus imágenes…' : reconstructionLabel(tour)}</p><span className="font-mono text-xs">{Math.round(busy === 'upload' ? progress : tour?.reconstruction?.progress ?? 0)}%</span></div>
+              <div className="flex items-center justify-between gap-2 text-sm"><p className="flex items-center gap-2"><Sparkles className="size-4 text-primary" />{busy === 'upload' ? 'Subiendo tus imágenes…' : marbleMode ? 'Generando las estancias en 3D…' : reconstructionLabel(tour)}</p><span className="font-mono text-xs">{Math.round(busy === 'upload' ? progress : marbleMode
+                ? (tour?.rooms?.filter(room => room.status === 'completed' || room.status === 'failed').length ?? 0) / (tour?.rooms?.length || 1) * 100
+                : tour?.reconstruction?.progress ?? 0)}%</span></div>
               <div className="mt-4 h-1 overflow-hidden rounded-full bg-secondary">{busy === 'upload' ? <div className="h-full bg-primary transition-[width]" style={{ width: `${progress}%` }} /> : <div className="loading-bar h-full w-1/3 bg-primary" />}</div>
-              <p className="mt-3 text-xs text-muted-foreground">{busy === 'upload' ? 'Mantén esta ventana abierta hasta completar la carga.' : 'Reconstrucción real en un servidor GPU. Puedes cerrar esta página y recuperar el estado al volver.'}</p>
+              {marbleMode && busy !== 'upload' && tour?.rooms ? <ul className="mt-4 space-y-1 text-sm">{tour.rooms.map(room => <li key={room.id} className="flex justify-between gap-3"><span className="truncate">{room.name}</span><span className={cn('shrink-0 text-xs', room.status === 'failed' ? 'text-red-300' : 'text-muted-foreground')}>{ROOM_LABELS[room.status]}</span></li>)}</ul> : null}
+              <p className="mt-3 text-xs text-muted-foreground">{busy === 'upload' ? 'Mantén esta ventana abierta hasta completar la carga.' : marbleMode ? 'Cada estancia tarda unos 6 minutos. Mantén esta página abierta hasta que terminen.' : 'Reconstrucción real en un servidor GPU. Puedes cerrar esta página y recuperar el estado al volver.'}</p>
             </div> : null}
           </Step>
         </section>
@@ -349,17 +438,17 @@ export function AstraFlow({ user, initialTour, initialError, accessReady, paymen
           <Step number={3} title="Explora antes de desbloquear" description="Revisa los renders de la reconstrucción antes de desbloquear el modelo." active={Boolean(previewReady) && !paid} completed={Boolean(paid)}
             right={<Badge className="hidden sm:flex">{paid ? 'Sin marca de agua' : 'Vista previa'}</Badge>}>
             <TourViewer tour={tour} />
-            <p className="mt-4 text-xs leading-relaxed text-muted-foreground">{tour?.simulated ? 'Este tour pertenece al prototipo anterior: contiene fotografías, no un modelo 3D.' : 'Antes del pago solo se muestran renders reducidos con marca de agua incorporada. El modelo 3D completo permanece privado.'}</p>
+            <p className="mt-4 text-xs leading-relaxed text-muted-foreground">{tour?.simulated ? 'Este tour pertenece al prototipo anterior: contiene fotografías, no un modelo 3D.' : marbleMode ? 'Antes del pago solo se muestra una miniatura de cada estancia. Las escenas 3D permanecen privadas.' : 'Antes del pago solo se muestran renders reducidos con marca de agua incorporada. El modelo 3D completo permanece privado.'}</p>
           </Step>
         </section>
 
         <section id="step-4" aria-label="Paso 4: Pago y descarga">
-          <Step number={4} title={paid ? 'Tu pack está listo' : 'Una propiedad. Un solo pago.'} description={paid ? 'Descárgalo y ábrelo en tu navegador.' : 'Desbloquea el modelo 3D y el visor SuperSplat descargable.'} active={Boolean(previewReady)} completed={Boolean(paid)}
+          <Step number={4} title={paid ? marbleMode ? 'Tu tour está listo' : 'Tu pack está listo' : 'Una propiedad. Un solo pago.'} description={marbleMode ? paid ? 'Ábrelo en el visor de la previsualización.' : 'Desbloquea el visor 3D de cada estancia.' : paid ? 'Descárgalo y ábrelo en tu navegador.' : 'Desbloquea el modelo 3D y el visor SuperSplat descargable.'} active={Boolean(previewReady)} completed={Boolean(paid)}
             right={<div className="text-right"><span className="text-3xl font-medium tracking-tight">19<span className="ml-1 text-lg text-muted-foreground">€</span></span><p className="mt-1 text-xs text-muted-foreground">pago único</p></div>}>
-            <div className="mb-6 flex flex-wrap gap-x-6 gap-y-3 text-sm text-muted-foreground">{['Modelo 3D privado', 'Visor SuperSplat', 'Pack descargable'].map(t => <span key={t} className="flex items-center gap-2"><Check className="size-4 text-primary" />{t}</span>)}</div>
-            {paid && tour ? <Button asChild size="lg" className="w-full"><a href={`/api/tours/${tour.id}/download`}><Download />Descargar Pack Completo</a></Button> : <Button size="lg" className="w-full text-wrap leading-relaxed" disabled={!previewReady || Boolean(busy) || !paymentsReady || paymentWaiting} onClick={() => void checkout()}>
+            <div className="mb-6 flex flex-wrap gap-x-6 gap-y-3 text-sm text-muted-foreground">{(marbleMode ? ['Visor 3D por estancias', 'Mira alrededor desde cada estancia', 'Escenas privadas'] : ['Modelo 3D privado', 'Visor SuperSplat', 'Pack descargable']).map(t => <span key={t} className="flex items-center gap-2"><Check className="size-4 text-primary" />{t}</span>)}</div>
+            {paid && tour ? marbleMode ? <Button asChild size="lg" className="w-full"><a href="#step-3"><Sparkles />Abrir el tour 3D</a></Button> : <Button asChild size="lg" className="w-full"><a href={`/api/tours/${tour.id}/download`}><Download />Descargar Pack Completo</a></Button> : <Button size="lg" className="w-full text-wrap leading-relaxed" disabled={!previewReady || Boolean(busy) || !paymentsReady || paymentWaiting} onClick={() => void checkout()}>
               {busy === 'checkout' || paymentWaiting ? <LoaderCircle className="animate-spin" /> : <CreditCard />}
-              {paymentWaiting ? 'Verificando el pago con Stripe…' : busy === 'checkout' ? 'Abriendo Stripe Checkout…' : 'Descargar Tour 3D en Alta Resolución - 19€'}
+              {paymentWaiting ? 'Verificando el pago con Stripe…' : busy === 'checkout' ? 'Abriendo Stripe Checkout…' : marbleMode ? 'Desbloquear Tour 3D - 19€' : 'Descargar Tour 3D en Alta Resolución - 19€'}
             </Button>}
             <div className="mt-4 flex flex-wrap items-center justify-between gap-3"><p className="flex items-center gap-1.5 text-xs text-muted-foreground"><ShieldCheck className="size-3.5" />Stripe Checkout · Pago seguro</p>
               {tour ? <Button variant="ghost" size="sm" disabled={Boolean(busy)} onClick={() => { setError(null); void refreshTour().catch(e => setError(e.message)); }}><RefreshCw />Actualizar estado</Button> : <span className="text-xs text-muted-foreground">Completa los pasos anteriores</span>}

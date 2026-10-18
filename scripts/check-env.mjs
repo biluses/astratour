@@ -27,5 +27,10 @@ const runpod = ['RUNPOD_ENDPOINT_ID', 'RUNPOD_API_KEY'].filter((key) => env[key]
 if (runpod.length === 1) check(false, 'RUNPOD_ENDPOINT_ID y RUNPOD_API_KEY van juntos (opcionales)');
 else if (runpod.length === 2) check(/^[a-z0-9]+$/i.test(env.RUNPOD_ENDPOINT_ID.trim()), 'RUNPOD_ENDPOINT_ID (disparo automático GPU)');
 else console.log('INFO Runpod Serverless no configurado: los trabajos esperan a un worker arrancado manualmente.');
+check(['true', 'false', undefined].includes(env.MARBLE_ENABLED), 'MARBLE_ENABLED (true/false, por defecto false)');
+if (env.MARBLE_ENABLED === 'true') check(Boolean(env.WORLD_LABS_API_KEY?.trim()), 'WORLD_LABS_API_KEY (necesaria con MARBLE_ENABLED=true)');
+else console.log('INFO Tours por estancias (World Labs Marble) deshabilitados.');
+const maxRooms = Number(env.MARBLE_MAX_ROOMS ?? 8);
+check(Number.isInteger(maxRooms) && maxRooms >= 1 && maxRooms <= 20, 'MARBLE_MAX_ROOMS (1–20, por defecto 8)');
 console.log(failures.length ? `${failures.length} comprobaciones fallidas.` : 'Configuración válida. Esto no prueba conectividad ni reconstrucción.');
 process.exitCode = failures.length ? 1 : 0;

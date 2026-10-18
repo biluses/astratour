@@ -1,7 +1,7 @@
 import 'server-only';
 import { getSql } from '@/lib/db';
 import { HttpError } from '@/lib/http';
-import { uuidSchema, type TourRow, type TourView, type ImageRow } from '@/lib/contracts';
+import { uuidSchema, type TourRow, type TourView, type ImageRow, type RoomStatus } from '@/lib/contracts';
 
 export async function getOwnedTour(id: string, userId: string): Promise<TourRow> {
   uuidSchema.parse(id);
@@ -18,11 +18,15 @@ export async function tourView(tour: TourRow): Promise<TourView> {
   const images = await getImages(tour.id);
   const sql = getSql();
   const [job] = await sql`SELECT status, progress, stage, error_code FROM reconstruction_jobs WHERE tour_id = ${tour.id}`;
+  const rooms = tour.engine === 'marble'
+    ? await sql`SELECT id, name, status, thumb_path FROM tour_rooms WHERE tour_id = ${tour.id} ORDER BY ordinal` : null;
   return {
     modelUrl: tour.status === 'pagado' && !tour.simulated && tour.model_path ? `/api/tours/${tour.id}/model.sog` : null,
     reconstruction: job ? { status: job.status as 'queued' | 'running' | 'completed' | 'failed', progress: Number(job.progress),
       stage: job.stage as string, errorCode: job.error_code as string | null } : null,
-    id: tour.id, title: tour.title, status: tour.status, simulated: tour.simulated,
+    id: tour.id, title: tour.title, status: tour.status, engine: tour.engine ?? 'gsplat', simulated: tour.simulated,
+    ...(rooms ? { rooms: rooms.map(room => ({ id: room.id as string, name: room.name as string, status: room.status as RoomStatus,
+      thumbUrl: room.thumb_path ? `/api/tours/${tour.id}/rooms/${room.id}/thumb.webp` : null })) } : {}),
     images: images.map(image => ({
       id: image.id, name: image.original_name,
       // Pathnames/URLs of private assets never leave the server here.

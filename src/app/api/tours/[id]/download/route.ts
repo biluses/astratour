@@ -9,6 +9,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
     const user = await requireUser();
     const { id } = await params;
     const tour = await getOwnedTour(id, user.id);
+    if (tour.engine === 'marble') throw new HttpError(404, 'Los tours por estancias se ven online; no tienen pack descargable.');
     if (tour.status !== 'pagado' || !tour.archive_path) throw new HttpError(402, 'Completa el pago antes de descargar.');
     await rateLimit(user.id, 'download', 30);
     const blob = await get(tour.archive_path, { access: 'private' });

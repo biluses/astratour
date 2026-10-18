@@ -20,7 +20,7 @@ export async function GET(request: Request) {
     await sql.transaction([
       sql`DELETE FROM api_rate_limits WHERE expires_at < now() - interval '1 day'`,
       sql`UPDATE tours SET status = 'error', updated_at = now()
-        WHERE status = 'procesando' AND processing_started_at < now() - interval '6 minutes'
+        WHERE status = 'procesando' AND engine = 'gsplat' AND processing_started_at < now() - interval '6 minutes'
           AND NOT EXISTS (SELECT 1 FROM reconstruction_jobs j WHERE j.tour_id = tours.id)`,
     ]);
     // Safety net: covers lost triggers and jobs re-queued by lease recovery above.

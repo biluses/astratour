@@ -16,7 +16,7 @@ export async function fulfillCheckout(eventId: string, session: Stripe.Checkout.
         AND checkout_key = ${identity.checkoutKey}
         AND (stripe_session_id IS NULL OR stripe_session_id = ${session.id})
         AND amount_cents = ${session.amount_total} AND currency = ${session.currency}
-        AND status IN ('pendiente_de_pago','pagado') AND archive_path IS NOT NULL
+        AND status IN ('pendiente_de_pago','pagado') AND (archive_path IS NOT NULL OR engine = 'marble')
       FOR UPDATE
     ), accepted AS (
       INSERT INTO stripe_events (event_id) SELECT ${eventId} FROM eligible

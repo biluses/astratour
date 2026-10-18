@@ -23,6 +23,7 @@
   "dependencies": {
     "@neondatabase/serverless": "1.1.0",
     "@playcanvas/supersplat-viewer": "1.31.2",
+    "@sparkjsdev/spark": "0.1.10",
     "@vercel/analytics": "^2.0.1",
     "@vercel/blob": "2.8.0",
     "class-variance-authority": "^0.7.1",
@@ -38,6 +39,7 @@
     "sharp": "^0.35.5",
     "stripe": "22.6.2",
     "tailwind-merge": "^3.5.0",
+    "three": "0.178.0",
     "zod": "^4.3.6"
   },
   "overrides": {
@@ -51,6 +53,7 @@
     "@types/node": "^22.19.0",
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
+    "@types/three": "0.178.1",
     "tailwindcss": "^4.2.0",
     "typescript": "^5.9.3",
     "vitest": "^4.0.18"

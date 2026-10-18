@@ -74,6 +74,7 @@ beforeAll(async () => {
   state.db = new PGlite();
   await state.db.exec(await readFile(new URL('../db/001_initial.sql', import.meta.url), 'utf8'));
   await state.db.exec(await readFile(new URL('../db/002_reconstruction.sql', import.meta.url), 'utf8'));
+  await state.db.exec(await readFile(new URL('../db/003_marble_rooms.sql', import.meta.url), 'utf8'));
   source = await sharp({ create: { width: 1600, height: 1000, channels: 3, background: '#6383a1' } }).jpeg().toBuffer();
 });
 beforeEach(async () => {

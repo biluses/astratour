@@ -1,7 +1,7 @@
 import { handleUpload, type HandleUploadBody } from '@vercel/blob/client';
 import { MAX_FILE_BYTES, uploadPayloadSchema } from '@/lib/contracts';
 import { getSql } from '@/lib/db';
-import { reconstructionConfigured } from '@/lib/config';
+import { marbleConfigured, reconstructionConfigured } from '@/lib/config';
 import { apiError, HttpError, json, readJson, requireSameOrigin, requireUser, rateLimit } from '@/lib/http';
 
 export const runtime = 'nodejs';
@@ -13,15 +13,18 @@ export async function POST(request: Request) {
       onBeforeGenerateToken: async (pathname, payload) => {
         requireSameOrigin(request);
         const user = await requireUser();
-        if (!reconstructionConfigured()) throw new HttpError(503, 'La captura está deshabilitada hasta validar el motor 3D.');
+        if (!reconstructionConfigured() && !marbleConfigured()) throw new HttpError(503, 'La captura está deshabilitada hasta validar el motor 3D.');
         const { tourId, imageId } = uploadPayloadSchema.parse(JSON.parse(payload || '{}'));
         await rateLimit(user.id, 'upload-token', 1800);
         const sql = getSql();
         const [image] = await sql`
-          SELECT i.* FROM tour_images i JOIN tours t ON t.id = i.tour_id
+          SELECT i.*, t.engine FROM tour_images i JOIN tours t ON t.id = i.tour_id
           WHERE i.id = ${imageId} AND t.id = ${tourId} AND t.user_id = ${user.id}
             AND t.status = 'borrador' AND i.source_path = ${pathname}`;
         if (!image) throw new HttpError(403, 'Esta carga no está autorizada.');
+        if (!(image.engine === 'marble' ? marbleConfigured() : reconstructionConfigured())) {
+          throw new HttpError(503, 'La captura está deshabilitada hasta validar el motor 3D.');
+        }
         return {
           allowedContentTypes: [image.content_type as string],
           maximumSizeInBytes: Math.min(Number(image.size_bytes), MAX_FILE_BYTES),
