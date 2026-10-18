@@ -1,4 +1,5 @@
 import 'server-only';
+import { after } from 'next/server';
 import { get, put } from '@vercel/blob';
 import { requiredEnv } from '@/lib/config';
 import { MAX_FILE_BYTES } from '@/lib/contracts';
@@ -11,9 +12,18 @@ const FINALIZE_STALE_MINUTES = 10;
 const MAX_ASSET_BYTES = 200 * 1024 * 1024;
 
 export interface MarbleAssets { thumb: string; pano: string | null; splatMobile: string; splatFull: string }
+interface World {
+  world_id?: string;
+  assets?: {
+    splats?: { spz_urls?: Record<string, string | null> | null };
+    imagery?: { pano_url?: string | null };
+    thumbnail_url?: string | null;
+  };
+}
 interface Operation {
   done?: boolean;
   error?: unknown;
+  metadata?: { world_id?: string };
   response?: {
     world_id?: string;
     assets?: {
@@ -25,6 +35,12 @@ interface Operation {
 }
 
 // Errors carry the status code only: never the key, the request body or the provider's response.
+class MarbleHttpError extends Error {
+  constructor(public status: number) { super(`Marble HTTP ${status}`); }
+}
+/** Network errors, 429 and 5xx heal on their own; other HTTP errors (404: expired operation) do not. */
+const transient = (error: unknown) => !(error instanceof MarbleHttpError) || error.status === 429 || error.status >= 500;
+
 async function call<T>(path: string, body?: unknown, timeoutMs = 15_000): Promise<T> {
   const response = await fetch(`${ENDPOINT}${path}`, {
     method: body ? 'POST' : 'GET',
@@ -33,24 +49,30 @@ async function call<T>(path: string, body?: unknown, timeoutMs = 15_000): Promis
     signal: AbortSignal.timeout(timeoutMs),
     cache: 'no-store',
   });
-  if (!response.ok) throw new Error(`Marble HTTP ${response.status}`);
+  if (!response.ok) throw new MarbleHttpError(response.status);
   return await response.json() as T;
 }
 
-/** Starts a reconstruct-mode world from JPEGs and their azimuths. Returns the operation id. */
-export async function generateWorld(displayName: string, images: { azimuth: number; jpeg: Buffer }[]): Promise<string> {
-  const operation = await call<{ operation_id?: string }>('/worlds:generate', {
+/** Starts a reconstruct-mode world from JPEGs and their azimuths. Returns the operation id (and world id, if already known). */
+export async function generateWorld(displayName: string, images: { azimuth: number; jpeg: Buffer }[]) {
+  const operation = await call<{ operation_id?: string; metadata?: { world_id?: string } }>('/worlds:generate', {
     display_name: displayName, model: 'marble-1.1',
     world_prompt: { type: 'multi-image', reconstruct_images: true, multi_image_prompt: images.map(image => ({
       azimuth: image.azimuth, content: { source: 'data_base64', extension: 'jpg', data_base64: image.jpeg.toString('base64') },
     })) },
   }, 120_000);
   if (!operation.operation_id) throw new Error('Marble response without operation_id');
-  return operation.operation_id;
+  return { operationId: operation.operation_id, worldId: operation.metadata?.world_id ?? null };
 }
 
 export async function getOperation(id: string): Promise<Operation> {
   return await call<Operation>(`/operations/${encodeURIComponent(id)}`);
+}
+
+/** The world outlives its operation (~3 h): same assets shape. */
+export async function getWorld(id: string): Promise<World> {
+  const body = await call<World & { world?: World }>(`/worlds/${encodeURIComponent(id)}`);
+  return body.world ?? body;
 }
 
 /** Asset URLs of a finished operation, or null when a required asset is missing. Only World Labs hosts are fetched. */
@@ -102,9 +124,9 @@ export async function sendRoom(roomId: string): Promise<void> {
     if (!images.length || images.some(image => image.azimuth == null)) throw new Error('Room without azimuths');
     const jpegs = await Promise.all(images.map(image => readSource(image.source_path as string)));
     const first = Number(images[0].azimuth);
-    const operationId = await generateWorld(`astratour-${roomId}`, images.map((image, i) => ({
+    const { operationId, worldId } = await generateWorld(`astratour-${roomId}`, images.map((image, i) => ({
       azimuth: ((Number(image.azimuth) - first) % 360 + 360) % 360, jpeg: jpegs[i] })));
-    await sql`UPDATE tour_rooms SET operation_id = ${operationId}, updated_at = now()
+    await sql`UPDATE tour_rooms SET operation_id = ${operationId}, world_id = ${worldId}, updated_at = now()
       WHERE id = ${roomId} AND status = 'generating' AND operation_id IS NULL`;
   } catch (error) {
     console.error('Marble submit failed', error instanceof Error ? error.message : 'UnknownError');
@@ -122,11 +144,13 @@ export async function sendRoom(roomId: string): Promise<void> {
  */
 export async function advanceMarbleTour(tourId: string) {
   const sql = getSql();
-  // Terminal paths for crashes: a claim whose submit never answered, and operations past their ~3 h expiry.
+  // Terminal paths for crashes: a claim whose submit never answered, an expired operation without a known world,
+  // and a world that never produced its assets.
   await sql`UPDATE tour_rooms SET status = 'failed', error_message = 'timeout', updated_at = now()
     WHERE tour_id = ${tourId} AND ((status = 'generating' AND operation_id IS NULL AND updated_at < now() - interval '10 minutes')
-      OR (status IN ('generating','finalizing') AND updated_at < now() - interval '3 hours'))`;
-  const rooms = await sql`SELECT id, operation_id, attempts FROM tour_rooms
+      OR (status IN ('generating','finalizing') AND world_id IS NULL AND updated_at < now() - interval '3 hours')
+      OR (status IN ('generating','finalizing') AND updated_at < now() - interval '24 hours'))`;
+  const rooms = await sql`SELECT id, operation_id, world_id, attempts FROM tour_rooms
     WHERE tour_id = ${tourId} AND operation_id IS NOT NULL AND (status = 'generating'
       OR (status = 'finalizing' AND updated_at < now() - make_interval(mins => ${FINALIZE_STALE_MINUTES})))`;
   const finalize: { roomId: string; assets: MarbleAssets }[] = [];
@@ -134,7 +158,16 @@ export async function advanceMarbleTour(tourId: string) {
   await Promise.all(rooms.map(async room => {
     const operationId = room.operation_id as string;
     let operation: Operation;
-    try { operation = await getOperation(operationId); } catch { return; } // transient: the next poll retries
+    try { operation = await getOperation(operationId); } catch (error) {
+      if (transient(error) || !room.world_id) return; // the next poll retries
+      // Operation gone (expired): the world keeps the assets. Not ready yet: stay 'generating'.
+      try { operation = { done: true, response: await getWorld(room.world_id as string) }; } catch { return; }
+      if (!operationAssets(operation)) return;
+    }
+    const worldId = operation.response?.world_id ?? operation.metadata?.world_id;
+    if (worldId && worldId !== room.world_id) {
+      await sql`UPDATE tour_rooms SET world_id = ${worldId} WHERE id = ${room.id} AND operation_id = ${operationId}`;
+    }
     if (!operation.done && !operation.error) return;
     const assets = operation.error ? null : operationAssets(operation);
     if (!assets) {
@@ -147,7 +180,7 @@ export async function advanceMarbleTour(tourId: string) {
       if (claimed && retry) resubmit.push(room.id as string);
       return;
     }
-    const [claimed] = await sql`UPDATE tour_rooms SET status = 'finalizing', world_id = ${operation.response?.world_id ?? null}, updated_at = now()
+    const [claimed] = await sql`UPDATE tour_rooms SET status = 'finalizing', world_id = COALESCE(${worldId ?? null}, world_id), updated_at = now()
       WHERE id = ${room.id} AND operation_id = ${operationId} AND (status = 'generating'
         OR (status = 'finalizing' AND updated_at < now() - make_interval(mins => ${FINALIZE_STALE_MINUTES})))
       RETURNING id`;
@@ -155,6 +188,17 @@ export async function advanceMarbleTour(tourId: string) {
   }));
   await settleMarbleTour(tourId);
   return { finalize, resubmit };
+}
+
+/** One progress step plus its follow-up work after the response. Shared by the owner's poll and the maintenance cron. */
+export async function pollMarbleTour(tourId: string, userId: string): Promise<void> {
+  const { finalize, resubmit } = await advanceMarbleTour(tourId);
+  if (finalize.length || resubmit.length) {
+    after(() => Promise.all([
+      ...finalize.map(room => finalizeRoom(tourId, userId, room.roomId, room.assets)),
+      ...resubmit.map(sendRoom),
+    ]));
+  }
 }
 
 /** Copies a claimed room's assets into private Blob and completes it. A crash leaves it 'finalizing' to be reclaimed. */

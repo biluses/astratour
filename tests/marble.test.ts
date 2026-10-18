@@ -10,11 +10,13 @@ const state = vi.hoisted(() => ({
   submits: [] as { url: string; headers: Record<string, string>; body: Record<string, unknown> }[],
   operations: new Map<string, unknown>(),
   nextOperation: 0,
+  worlds: new Map<string, unknown>(),
+  worldFetches: 0,
 }));
-vi.mock('@/lib/db', () => ({ getSql: () => async (parts: TemplateStringsArray, ...values: unknown[]) => {
+vi.mock('@/lib/db', () => ({ getSql: () => Object.assign(async (parts: TemplateStringsArray, ...values: unknown[]) => {
   const query = parts.reduce((text, part, i) => text + (i ? `$${i}` : '') + part, '');
   return (await state.db!.query(query, values)).rows;
-} }));
+}, { transaction: (queries: Promise<unknown>[]) => Promise.all(queries) }) }));
 vi.mock('@/auth', () => ({ auth: async () => state.user ? { user: state.user } : null }));
 vi.mock('@vercel/blob', () => ({
   get: vi.fn(async (path: string) => state.blobs.has(path) ? {
@@ -34,6 +36,7 @@ import { POST as processTour } from '@/app/api/tours/[id]/process/route';
 import { GET as getTour } from '@/app/api/tours/[id]/route';
 import { GET as roomAsset } from '@/app/api/tours/[id]/rooms/[roomId]/[asset]/route';
 import { GET as download } from '@/app/api/tours/[id]/download/route';
+import { GET as maintenance } from '@/app/api/maintenance/route';
 import { fulfillCheckout } from '@/lib/fulfillment';
 import type Stripe from 'stripe';
 
@@ -79,7 +82,15 @@ beforeAll(async () => {
       state.submits.push({ url, headers: init!.headers as Record<string, string>, body: JSON.parse(init!.body as string) });
       return Response.json({ operation_id: `op-${++state.nextOperation}` });
     }
-    if (url.includes('/operations/')) return Response.json(state.operations.get(decodeURIComponent(url.split('/').pop()!)) ?? { done: false });
+    if (url.includes('/operations/')) {
+      const operation = state.operations.get(decodeURIComponent(url.split('/').pop()!)) ?? { done: false };
+      return typeof operation === 'number' ? new Response('', { status: operation }) : Response.json(operation);
+    }
+    if (url.includes('/worlds/')) {
+      state.worldFetches++;
+      const world = state.worlds.get(decodeURIComponent(url.split('/').pop()!));
+      return world ? Response.json(world) : new Response('', { status: 404 });
+    }
     if (url.startsWith(CDN)) return new Response(new Uint8Array([7, 7, 7]));
     return new Response('nope', { status: 404 });
   }));
@@ -89,6 +100,7 @@ beforeEach(async () => {
   delete process.env.MARBLE_MAX_ROOMS;
   state.user = { id: owner, name: 'Owner' };
   state.blobs.clear(); state.submits.length = 0; state.operations.clear(); state.pending.length = 0;
+  state.worlds.clear(); state.worldFetches = 0;
   await state.db!.exec('TRUNCATE app_users CASCADE; TRUNCATE api_rate_limits, stripe_events;');
   await state.db!.query('INSERT INTO app_users (id,google_sub,email) VALUES ($1,$2,$3),($4,$5,$6)',
     [owner, 'google-owner', 'owner@example.invalid', other, 'google-other', 'other@example.invalid']);
@@ -97,7 +109,7 @@ afterAll(async () => { vi.unstubAllGlobals(); await state.db?.close(); });
 
 describe('Marble client', () => {
   it('sends the gen.py request shape with the WLT-Api-Key header', async () => {
-    expect(await generateWorld('room', [{ azimuth: 0, jpeg: Buffer.from(JPEG) }, { azimuth: 72.5, jpeg: Buffer.from([1]) }])).toBe('op-1');
+    expect(await generateWorld('room', [{ azimuth: 0, jpeg: Buffer.from(JPEG) }, { azimuth: 72.5, jpeg: Buffer.from([1]) }])).toEqual({ operationId: 'op-1', worldId: null });
     expect(state.submits[0].url).toBe('https://api.worldlabs.ai/marble/v1/worlds:generate');
     expect(state.submits[0].headers['WLT-Api-Key']).toBe(KEY);
     expect(state.submits[0].body).toEqual({ display_name: 'room', model: 'marble-1.1', world_prompt: { type: 'multi-image',
@@ -225,6 +237,53 @@ describe('Marble room lifecycle', () => {
     const { finalize } = await advanceMarbleTour(tourId);
     expect(finalize).toHaveLength(1);
     await finalizeRoom(tourId, owner, cocina.id, finalize[0].assets);
+    expect(await tourStatus(tourId)).toBe('pendiente_de_pago');
+  });
+
+  it('saves world_id while in progress, then finalizes from the world once the operation expires', async () => {
+    const { tourId } = await createMarbleTour([room('Salón', [0, 72, 144, 216, 288])]);
+    await processTour(post(`/api/tours/${tourId}/process`, {}), ctx({ id: tourId }));
+    await settled();
+    const [salon] = await roomsOf(tourId);
+    state.operations.set(salon.operation_id!, { done: false, metadata: { world_id: 'world-9' } });
+    await advanceMarbleTour(tourId);
+    expect((await rows<{ world_id: string }>('SELECT world_id FROM tour_rooms WHERE id = $1', [salon.id]))[0].world_id).toBe('world-9');
+    state.operations.set(salon.operation_id!, 404); // expired
+    expect((await advanceMarbleTour(tourId)).finalize).toEqual([]); // world without assets yet: keep waiting
+    expect((await roomsOf(tourId))[0]).toMatchObject({ status: 'generating', attempts: 1 });
+    state.worlds.set('world-9', { world_id: 'world-9', assets: success.response.assets });
+    const { finalize } = await advanceMarbleTour(tourId);
+    expect(finalize).toHaveLength(1);
+    await finalizeRoom(tourId, owner, salon.id, finalize[0].assets);
+    expect(await tourStatus(tourId)).toBe('pendiente_de_pago');
+  });
+
+  it('leaves the room untouched on transient errors (no attempt consumed, no world fetch)', async () => {
+    const { tourId } = await createMarbleTour([room('Salón', [0, 72, 144, 216, 288])]);
+    await processTour(post(`/api/tours/${tourId}/process`, {}), ctx({ id: tourId }));
+    await settled();
+    const [before] = await roomsOf(tourId);
+    await state.db!.query("UPDATE tour_rooms SET world_id = 'world-1' WHERE id = $1", [before.id]);
+    for (const status of [503, 429]) {
+      state.operations.set(before.operation_id!, status);
+      expect(await advanceMarbleTour(tourId)).toEqual({ finalize: [], resubmit: [] });
+    }
+    expect((await roomsOf(tourId))[0]).toMatchObject({ status: 'generating', attempts: 1, operation_id: before.operation_id });
+    expect(state.worldFetches).toBe(0);
+    expect(state.submits).toHaveLength(1);
+  });
+
+  it('completes a tour from the maintenance cron without any client poll', async () => {
+    process.env.CRON_SECRET = 'c'.repeat(40);
+    const { tourId } = await createMarbleTour([room('Salón', [0, 72, 144, 216, 288])]);
+    await processTour(post(`/api/tours/${tourId}/process`, {}), ctx({ id: tourId }));
+    await settled();
+    state.operations.set((await roomsOf(tourId))[0].operation_id!, success);
+    state.user = null; // nobody is logged in
+    const response = await maintenance(new Request('http://localhost:3000/api/maintenance', { headers: { authorization: `Bearer ${process.env.CRON_SECRET}` } }));
+    expect(response.status).toBe(200);
+    await settled();
+    expect((await roomsOf(tourId))[0].status).toBe('completed');
     expect(await tourStatus(tourId)).toBe('pendiente_de_pago');
   });
 });
