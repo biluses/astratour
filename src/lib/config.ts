@@ -1,5 +1,5 @@
 import 'server-only';
-import { MAX_FILES, MIN_CAPTURE_FILES } from '@/lib/contracts';
+import { MARBLE_ROOMS_LIMIT, MAX_FILES, MIN_CAPTURE_FILES } from '@/lib/contracts';
 
 export function requiredEnv(name: string): string {
   const value = process.env[name];
@@ -36,4 +36,14 @@ export function minReconstructionImages(): number {
   if (!Number.isInteger(value) || value < 3 || value > MAX_FILES) throw new Error('Invalid RECONSTRUCTION_MIN_IMAGES');
   // The env can raise the evidence-backed floor (docs/CAPTURE.md) but never lower it; stale values like 20 are lifted.
   return Math.max(value, MIN_CAPTURE_FILES);
+}
+
+/** Kill switch for World Labs Marble (paid per room): off unless explicitly enabled with a key. */
+export function marbleConfigured(): boolean {
+  return process.env.MARBLE_ENABLED === 'true' && Boolean(process.env.WORLD_LABS_API_KEY);
+}
+export function marbleMaxRooms(): number {
+  const value = Number(process.env.MARBLE_MAX_ROOMS ?? 8);
+  if (!Number.isInteger(value) || value < 1 || value > MARBLE_ROOMS_LIMIT) throw new Error('Invalid MARBLE_MAX_ROOMS');
+  return value;
 }

@@ -5,6 +5,11 @@ const config: NextConfig = {
   outputFileTracingRoot: process.cwd(),
   serverExternalPackages: ["sharp"],
   images: { remotePatterns: [{ protocol: "https", hostname: "lh3.googleusercontent.com" }] },
+  webpack(webpackConfig) {
+    // Spark inlines its WASM as `new URL("data:...", import.meta.url)`: keep it as runtime code, not an asset import.
+    webpackConfig.module.rules.push({ test: /[\\/]@sparkjsdev[\\/]spark[\\/]/, parser: { url: false } });
+    return webpackConfig;
+  },
   async headers() {
     return [{ source: "/:path*", headers: [
       { key: "X-Content-Type-Options", value: "nosniff" },

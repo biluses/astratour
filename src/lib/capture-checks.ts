@@ -1,5 +1,6 @@
 /** Client-side capture checks run before upload. Pure functions plus one browser-only helper (analyzeFile). */
-import { MIN_CAPTURE_FILES, RECOMMENDED_CAPTURE_FILES } from '@/lib/contracts';
+import { MARBLE_MAX_PHOTOS, MARBLE_MIN_PHOTOS, MIN_CAPTURE_FILES, RECOMMENDED_CAPTURE_FILES, type TourEngine } from '@/lib/contracts';
+import { readAzimuth } from '@/lib/exif';
 
 export const MIN_SHORT_SIDE_PX = 720; // provisional: blocks captures too small for reliable feature matching.
 export const RECOMMENDED_SHORT_SIDE_PX = 1080; // provisional
@@ -13,7 +14,8 @@ export const DARK_WARN_THRESHOLD = 40; // provisional: mean luminance, 0-255.
 export const UPLOAD_LONG_SIDE_PX = 2048;
 export const UPLOAD_JPEG_QUALITY = 0.9;
 
-export interface PhotoAnalysis { name: string; width: number; height: number; sha256: string; sharpness: number; luminance: number }
+/** azimuth: compass heading from EXIF (null when missing); required by the marble engine only. */
+export interface PhotoAnalysis { name: string; width: number; height: number; sha256: string; sharpness: number; luminance: number; azimuth?: number | null }
 export type CaptureAnalysis = PhotoAnalysis | { name: string; unreadable: true };
 export interface CaptureSummary { blocking: string[]; warnings: string[] }
 /** `flagged`: indices (into the analysed list) of the photos that cause a per-photo blocking issue. */
@@ -25,7 +27,10 @@ export function listNames(names: string[]): string {
   return names.length > MAX_LISTED ? `${shown} y ${names.length - MAX_LISTED} más` : shown;
 }
 
-export function checkDimensions(photos: Pick<PhotoAnalysis, 'name' | 'width' | 'height'>[]): CaptureSummary {
+export const MISSING_AZIMUTH_HELP = 'Activa la localización de la Cámara (Ajustes > Privacidad > Localización > Cámara) y repite las fotos.';
+
+/** `singleSize`: the gsplat worker models one camera, so mixed sizes block. Marble accepts mixed orientations. */
+export function checkDimensions(photos: Pick<PhotoAnalysis, 'name' | 'width' | 'height'>[], singleSize = true): CaptureSummary {
   const blocking: string[] = [];
   const warnings: string[] = [];
   const bySize = new Map<string, string[]>();
@@ -33,7 +38,7 @@ export function checkDimensions(photos: Pick<PhotoAnalysis, 'name' | 'width' | '
     const key = `${p.width}×${p.height}`;
     bySize.set(key, [...(bySize.get(key) ?? []), p.name]);
   }
-  if (bySize.size > 1) {
+  if (singleSize && bySize.size > 1) {
     // The production worker models a single camera: every photo must share one resolution.
     const groups = [...bySize.entries()].sort((a, b) => b[1].length - a[1].length);
     const odd = groups.slice(1).flatMap(([, names]) => names);
@@ -92,38 +97,52 @@ export function meanLuminance(gray: ArrayLike<number>): number {
   return gray.length ? sum / gray.length : 0;
 }
 
-export function summarize(results: CaptureAnalysis[], minimum = MIN_CAPTURE_FILES): CaptureChecks {
+/** `minimum` applies to gsplat only; marble rooms need MARBLE_MIN_PHOTOS..MARBLE_MAX_PHOTOS photos with a compass azimuth. */
+export function summarize(results: CaptureAnalysis[], minimum = MIN_CAPTURE_FILES, engine: TourEngine = 'gsplat'): CaptureChecks {
+  const marble = engine === 'marble';
   const photos = results.filter((r): r is PhotoAnalysis => !('unreadable' in r));
   const unreadable = results.filter(r => 'unreadable' in r).map(r => r.name);
-  const { blocking, warnings } = checkDimensions(photos);
+  const { blocking, warnings } = checkDimensions(photos, !marble);
   // Warn only: a browser that cannot decode or measure a photo must not block an otherwise valid capture.
   if (unreadable.length) warnings.unshift(`No se han podido comprobar estas fotos en tu navegador: ${listNames(unreadable)}. Asegúrate de que son JPG o PNG originales.`);
   const duplicates = findDuplicates(photos);
   // The same file picked twice shares its name; "a.jpg = a.jpg" reads as a bug.
   const describe = (group: string[]) => new Set(group).size === 1 ? `${group[0]} (seleccionada ${group.length} veces)` : group.join(' = ');
   if (duplicates.length) blocking.push(`Hay fotos duplicadas (mismo archivo): ${listNames(duplicates.map(describe))}. Quita las copias.`);
-  if (results.length && results.length < minimum) blocking.unshift(`Tienes ${results.length} fotos; faltan ${minimum - results.length} para el mínimo de ${minimum}. Añade fotos de la misma estancia siguiendo la guía.`);
-  if (results.length >= minimum && results.length < RECOMMENDED_CAPTURE_FILES) warnings.push(`Tienes ${results.length} fotos. Con menos de ${RECOMMENDED_CAPTURE_FILES} por estancia la reconstrucción puede fallar; si puedes, añade más siguiendo la guía.`);
+  if (marble) {
+    // An unreadable photo has no azimuth either: Marble cannot place it.
+    const noAzimuth = results.filter(r => 'unreadable' in r || r.azimuth == null).map(r => r.name);
+    if (noAzimuth.length) blocking.push(`Estas fotos no tienen orientación de brújula: ${listNames(noAzimuth)}. ${MISSING_AZIMUTH_HELP}`);
+    if (results.length && (results.length < MARBLE_MIN_PHOTOS || results.length > MARBLE_MAX_PHOTOS)) {
+      blocking.unshift(`Esta estancia tiene ${results.length} fotos; necesita entre ${MARBLE_MIN_PHOTOS} y ${MARBLE_MAX_PHOTOS}.`);
+    }
+  } else if (results.length && results.length < minimum) blocking.unshift(`Tienes ${results.length} fotos; faltan ${minimum - results.length} para el mínimo de ${minimum}. Añade fotos de la misma estancia siguiendo la guía.`);
+  if (!marble && results.length >= minimum && results.length < RECOMMENDED_CAPTURE_FILES) warnings.push(`Tienes ${results.length} fotos. Con menos de ${RECOMMENDED_CAPTURE_FILES} por estancia la reconstrucción puede fallar; si puedes, añade más siguiendo la guía.`);
   // Report a dark photo once, as dark: noise and underexposure make its sharpness unreliable.
   const blurry = photos.filter(p => p.sharpness < BLUR_WARN_THRESHOLD && p.luminance >= DARK_WARN_THRESHOLD).map(p => p.name);
   if (blurry.length) warnings.push(`Posiblemente movidas o desenfocadas: ${listNames(blurry)}. Repítelas con el móvil estable.`);
   const dark = photos.filter(p => p.luminance < DARK_WARN_THRESHOLD).map(p => p.name);
   if (dark.length) warnings.push(`Muy oscuras: ${listNames(dark)}. Añade luz o repítelas con iluminación constante.`);
-  return { blocking, warnings, flagged: flagBlockingPhotos(results) };
+  return { blocking, warnings, flagged: flagBlockingPhotos(results, engine) };
 }
 
-/** Same rules as checkDimensions/findDuplicates, by index: odd-size photos (minority sizes), too small, and repeat copies. */
-export function flagBlockingPhotos(results: CaptureAnalysis[]): number[] {
+/**
+ * Same rules as checkDimensions/findDuplicates, by index: odd-size photos (minority sizes), too small, and repeat copies.
+ * Marble: no size-minority rule; photos without azimuth (including unreadable ones) are flagged instead.
+ */
+export function flagBlockingPhotos(results: CaptureAnalysis[], engine: TourEngine = 'gsplat'): number[] {
+  const marble = engine === 'marble';
   const sizes = new Map<string, number>();
   for (const r of results) if (!('unreadable' in r)) sizes.set(`${r.width}×${r.height}`, (sizes.get(`${r.width}×${r.height}`) ?? 0) + 1);
   const majority = [...sizes.entries()].sort((a, b) => b[1] - a[1])[0]?.[0];
   const seen = new Set<string>();
   const flagged: number[] = [];
   results.forEach((r, i) => {
-    if ('unreadable' in r) return;
+    if ('unreadable' in r) { if (marble) flagged.push(i); return; }
     const repeated = seen.has(r.sha256);
     seen.add(r.sha256);
-    if (repeated || `${r.width}×${r.height}` !== majority || Math.min(r.width, r.height) < MIN_SHORT_SIDE_PX) flagged.push(i);
+    const oddSize = marble ? r.azimuth == null : `${r.width}×${r.height}` !== majority;
+    if (repeated || oddSize || Math.min(r.width, r.height) < MIN_SHORT_SIDE_PX) flagged.push(i);
   });
   return flagged;
 }
@@ -134,9 +153,12 @@ export function fitSize(width: number, height: number, longSide: number) {
   return { w: Math.max(1, Math.round(width * scale)), h: Math.max(1, Math.round(height * scale)) };
 }
 
-/** JPEGs already within the upload size pass through byte-for-byte; everything else is re-encoded as JPEG. */
-export function needsReencode(type: string, width: number, height: number): boolean {
-  return type !== 'image/jpeg' || Math.max(width, height) > UPLOAD_LONG_SIDE_PX;
+/**
+ * JPEGs already within the upload size pass through byte-for-byte; everything else is re-encoded as JPEG.
+ * `always` (marble): photos leave for a third party, so strip EXIF (location) and bake orientation, as tested.
+ */
+export function needsReencode(type: string, width: number, height: number, always = false): boolean {
+  return always || type !== 'image/jpeg' || Math.max(width, height) > UPLOAD_LONG_SIDE_PX;
 }
 
 export function uploadName(name: string): string {
@@ -175,17 +197,18 @@ function grayAt(bitmap: ImageBitmap, longSide: number) {
  * upload (2048 px JPEG). The analysis always describes the original (dimensions, SHA-256). Re-encoded uploads
  * carry no EXIF (no GPS); pass-through JPEGs keep it until the worker strips it on normalization.
  */
-export async function analyzeFile(file: File): Promise<{ analysis: PhotoAnalysis; upload: File }> {
+export async function analyzeFile(file: File, alwaysReencode = false): Promise<{ analysis: PhotoAnalysis; upload: File }> {
+  const bytes = await file.arrayBuffer();
   const [bitmap, digest] = await Promise.all([
     createImageBitmap(file, { imageOrientation: 'from-image' }),
-    file.arrayBuffer().then(buffer => crypto.subtle.digest('SHA-256', buffer)),
+    crypto.subtle.digest('SHA-256', bytes),
   ]);
   try {
     const { gray, w, h } = grayAt(bitmap, ANALYSIS_LONG_SIDE_PX);
     const sha256 = Array.from(new Uint8Array(digest), b => b.toString(16).padStart(2, '0')).join('');
     const analysis = { name: file.name, width: bitmap.width, height: bitmap.height, sha256,
-      sharpness: sharpness(gray, w, h), luminance: meanLuminance(gray) };
-    if (!needsReencode(file.type, bitmap.width, bitmap.height)) return { analysis, upload: file };
+      sharpness: sharpness(gray, w, h), luminance: meanLuminance(gray), azimuth: readAzimuth(bytes) };
+    if (!needsReencode(file.type, bitmap.width, bitmap.height, alwaysReencode)) return { analysis, upload: file };
     const blob = await toJpeg(drawAt(bitmap, UPLOAD_LONG_SIDE_PX).context.canvas);
     return { analysis, upload: new File([blob], uploadName(file.name), { type: 'image/jpeg', lastModified: file.lastModified }) };
   } finally { bitmap.close(); }

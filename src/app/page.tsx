@@ -1,6 +1,6 @@
 import { auth } from '@/auth';
 import { AstraFlow } from '@/components/astra-flow';
-import { authConfigured, checkoutConfigured, reconstructionConfigured, minReconstructionImages } from '@/lib/config';
+import { authConfigured, checkoutConfigured, marbleConfigured, marbleMaxRooms, reconstructionConfigured, minReconstructionImages } from '@/lib/config';
 import { getSql } from '@/lib/db';
 import { uuidSchema, type TourView, type TourRow } from '@/lib/contracts';
 import { getOwnedTour, tourView } from '@/lib/tours';
@@ -43,6 +43,8 @@ export default async function Page({ searchParams }: {
     paymentsReady={checkoutConfigured()}
     reconstructionReady={reconstructionConfigured()}
     minimumImages={minReconstructionImages()}
+    marbleReady={marbleConfigured()}
+    marbleMaxRooms={marbleMaxRooms()}
     checkoutReturn={params.checkout === 'success' ? 'success' : params.checkout === 'cancelled' ? 'cancelled' : null}
   />;
 }

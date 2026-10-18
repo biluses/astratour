@@ -137,3 +137,38 @@ describe('upload downscale', () => {
     expect(uploadName('foto')).toBe('foto.jpg');
   });
 });
+
+describe('Marble room checks', () => {
+  const room = (n: number, over: Partial<PhotoAnalysis> = {}) =>
+    Array.from({ length: n }, (_, i) => photo(`p${i}.jpg`, { sha256: `h${i}`, azimuth: i * 45, ...over }));
+
+  it('accepts 5 to 8 photos with azimuth, mixed orientations and no 40-photo floor', () => {
+    const mixed = [...room(4), photo('v.jpg', { sha256: 'v', width: 3024, height: 4032, azimuth: 300 })];
+    expect(summarize(mixed, 0, 'marble')).toEqual({ blocking: [], warnings: [], flagged: [] });
+    expect(summarize(room(8), 0, 'marble').blocking).toEqual([]);
+  });
+  it('blocks fewer than 5 or more than 8 photos per room', () => {
+    expect(summarize(room(4), 0, 'marble').blocking[0]).toContain('entre 5 y 8');
+    expect(summarize(room(9), 0, 'marble').blocking[0]).toContain('entre 5 y 8');
+  });
+  it('blocks and flags photos without a compass azimuth, explaining how to enable it', () => {
+    const photos = [...room(4), photo('sin.jpg', { sha256: 'x', azimuth: null })];
+    const result = summarize(photos, 0, 'marble');
+    expect(result.blocking.join(' ')).toContain('sin.jpg');
+    expect(result.blocking.join(' ')).toContain('Ajustes > Privacidad > Localización > Cámara');
+    expect(result.flagged).toEqual([4]);
+    expect(summarize([...room(4), { name: 'roto.jpg', unreadable: true }], 0, 'marble').flagged).toEqual([4]);
+  });
+  it('keeps the duplicate, resolution, blur and dark checks', () => {
+    const result = summarize([...room(4), photo('dup.jpg', { sha256: 'h0', azimuth: 10 }),
+      photo('low.jpg', { sha256: 'l', width: 600, height: 400, azimuth: 20 }),
+      photo('dark.jpg', { sha256: 'd', luminance: DARK_WARN_THRESHOLD - 1, azimuth: 30 })], 0, 'marble');
+    expect(result.blocking.join(' ')).toContain('duplicadas');
+    expect(result.blocking.join(' ')).toContain('Resolución insuficiente');
+    expect(result.warnings.join(' ')).toContain('Muy oscuras');
+    expect(result.flagged).toEqual([4, 5]);
+  });
+  it('always re-encodes marble uploads (strips EXIF location before World Labs)', () => {
+    expect(needsReencode('image/jpeg', 1600, 1200, true)).toBe(true);
+  });
+});

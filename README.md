@@ -43,6 +43,8 @@ npm run dev
 
 No subir `.env.local`, `.secrets/` ni credenciales a Git. `vercel env pull` **sobrescribe** el archivo destino; conservar antes las variables locales que no existan en Vercel.
 
+`MARBLE_ENABLED=true` (con `WORLD_LABS_API_KEY`) activa los tours por estancias con World Labs Marble: cada estancia consume ~1.600 créditos (≈1,28 $). Desactivado por defecto; `MARBLE_MAX_ROOMS` (por defecto 8) limita las estancias por propiedad.
+
 `RECONSTRUCTION_ENABLED=false` deshabilita también las APIs de creación y autorización de nuevas cargas: no basta con desactivar el botón. Los archivos de una captura cuyo envío se interrumpa se reconcilian por propietario, tamaño y tipo; no se sobrescriben originales.
 
 ## Servicios

@@ -17,7 +17,7 @@ export async function POST(request: Request) {
     const sql = getSql();
     let tour = await getOwnedTour(tourId, user.id);
     if (tour.status === 'pagado') throw new HttpError(409, 'Este tour ya está pagado. Actualiza para descargarlo.');
-    if (tour.status !== 'pendiente_de_pago' || !tour.archive_path) throw new HttpError(409, 'Genera primero la previsualización.');
+    if (tour.status !== 'pendiente_de_pago' || (!tour.archive_path && tour.engine !== 'marble')) throw new HttpError(409, 'Genera primero la previsualización.');
     if (tour.stripe_session_id) {
       const existing = await stripe.checkout.sessions.retrieve(tour.stripe_session_id);
       if (existing.status === 'open' && existing.url) return json({ url: existing.url });
@@ -35,7 +35,8 @@ export async function POST(request: Request) {
       metadata: { tourId, userId: user.id, checkoutKey: tour.checkout_key },
       line_items: [{ quantity: 1, price_data: { currency: 'eur', unit_amount: PRICE_CENTS,
         product_data: { name: 'AstraTour Express · Pack completo',
-          description: tour.simulated ? 'Prototipo: paquete de imágenes, sin modelo 3D.' : 'Tour Gaussian Splatting: modelo 3D y visor SuperSplat descargable. Pago de prueba.' } } }],
+          description: tour.engine === 'marble' ? 'Tour 3D por estancias: visor online con un punto de vista por estancia. Pago de prueba.'
+            : tour.simulated ? 'Prototipo: paquete de imágenes, sin modelo 3D.' : 'Tour Gaussian Splatting: modelo 3D y visor SuperSplat descargable. Pago de prueba.' } } }],
       success_url: `${origin}/?tour=${tourId}&checkout=success`,
       cancel_url: `${origin}/?tour=${tourId}&checkout=cancelled`,
     }, { idempotencyKey: `astratour:${tourId}:${tour.checkout_key}` });

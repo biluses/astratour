@@ -17,21 +17,38 @@ export const createTourSchema = z.object({
   files: z.array(fileSchema).min(1).max(MAX_FILES),
 }).refine(v => v.files.reduce((n, f) => n + f.size, 0) <= MAX_TOTAL_BYTES,
   'Máximo 2 GB por propiedad.');
+// Marble (World Labs) per-room tours: 5 photos tested best, the API caps reconstruct mode at 8.
+export const MARBLE_MIN_PHOTOS = 5;
+export const MARBLE_MAX_PHOTOS = 8;
+export const MARBLE_ROOMS_LIMIT = 20; // hard cap; MARBLE_MAX_ROOMS lowers it per deployment.
+export const createMarbleTourSchema = z.object({
+  engine: z.literal('marble'),
+  title: z.string().trim().min(1).max(120).default('Mi propiedad'),
+  rooms: z.array(z.object({
+    name: z.string().trim().min(1).max(60),
+    files: z.array(fileSchema.extend({ type: z.literal('image/jpeg'), azimuth: z.number().finite().min(0).max(360) }))
+      .min(MARBLE_MIN_PHOTOS).max(MARBLE_MAX_PHOTOS),
+  })).min(1).max(MARBLE_ROOMS_LIMIT),
+});
 export const checkoutSchema = z.object({ tourId: uuidSchema });
 export const uploadPayloadSchema = z.object({ tourId: uuidSchema, imageId: uuidSchema });
 
 export type TourStatus = 'borrador' | 'procesando' | 'pendiente_de_pago' | 'pagado' | 'error';
+export type TourEngine = 'gsplat' | 'marble';
+export type RoomStatus = 'queued' | 'generating' | 'finalizing' | 'completed' | 'failed';
 export interface TourView {
   id: string;
   title: string;
   status: TourStatus;
+  engine: TourEngine;
   simulated: boolean;
+  rooms?: { id: string; name: string; status: RoomStatus; thumbUrl: string | null }[];
   images: { id: string; name: string; url: string | null }[];
   modelUrl?: string | null;
   reconstruction?: { status: 'queued' | 'running' | 'completed' | 'failed'; progress: number; stage: string; errorCode: string | null } | null;
 }
 export interface TourRow {
-  id: string; user_id: string; title: string; status: TourStatus; simulated: boolean;
+  id: string; user_id: string; title: string; status: TourStatus; engine: TourEngine; simulated: boolean;
   archive_path: string | null; checkout_key: string; stripe_session_id: string | null;
   amount_cents: number; currency: string;
   model_path?: string | null;
@@ -41,6 +58,7 @@ export interface ImageRow {
   id: string; tour_id: string; ordinal: number; source_path: string;
   original_name: string; content_type: string; size_bytes: number;
   preview_path: string | null; asset_path: string | null;
+  room_id?: string | null; azimuth?: number | null;
 }
 
 export const cameraPoseSchema = z.object({

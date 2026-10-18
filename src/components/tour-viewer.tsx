@@ -5,9 +5,16 @@ import { ArrowLeft, ArrowRight, Expand, ImageIcon, LockKeyhole, Move, ZoomIn, Zo
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { SplatViewer } from '@/components/splat-viewer';
+import { MarbleViewer } from '@/components/marble-viewer';
 import type { TourView } from '@/lib/contracts';
 
 export function TourViewer({ tour }: { tour: TourView | null }) {
+  if (tour?.engine === 'marble') {
+    const rooms = tour.rooms?.filter(room => room.status === 'completed') ?? [];
+    if (tour.status === 'pagado' && rooms.length) return <MarbleViewer key={tour.id} tourId={tour.id} rooms={rooms} />;
+    // Before payment: each room's thumbnail, with the same preview badge as the gsplat renders.
+    return <ImageTourViewer tour={{ ...tour, images: rooms.map(room => ({ id: room.id, name: room.name, url: room.thumbUrl })) }} />;
+  }
   // Do not even mount the viewer document before payment. A watermark overlay
   // cannot protect a full model already sent to the browser.
   if (tour?.status === 'pagado' && !tour.simulated && tour.modelUrl) {
